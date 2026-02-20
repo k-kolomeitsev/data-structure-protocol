@@ -322,5 +322,5 @@ Contributions that improve:
 
 ## License
 
-No license file is currently included in this repository. If you plan to publish or reuse it broadly, add an explicit `LICENSE`.
+This project is licensed under the **Apache License 2.0**. See [`LICENSE`](./LICENSE).
 
