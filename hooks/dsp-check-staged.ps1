@@ -44,10 +44,10 @@ foreach ($file in $newFiles) {
 
     $result = & cmd /c "$dspCli --root $DspRoot find-by-source `"$file`"" 2>$null
     if (-not $result) {
-        Write-Host "⚠ NEW/MODIFIED file not in DSP: $file" -ForegroundColor Yellow
+        Write-Host "[WARN] NEW/MODIFIED file not in DSP: $file" -ForegroundColor Yellow
         $issues++
     } else {
-        Write-Host "✓ $file" -ForegroundColor Green
+        Write-Host "[OK] $file" -ForegroundColor Green
     }
 }
 
@@ -55,7 +55,7 @@ $deletedFiles = (git diff --cached --name-only --diff-filter=D) -split "`n" | Wh
 foreach ($file in $deletedFiles) {
     $result = & cmd /c "$dspCli --root $DspRoot find-by-source `"$file`"" 2>$null
     if ($result) {
-        Write-Host "✗ DELETED file still in DSP: $file" -ForegroundColor Red
+        Write-Host "[ERR] DELETED file still in DSP: $file" -ForegroundColor Red
         $issues++
     }
 }
@@ -63,7 +63,7 @@ foreach ($file in $deletedFiles) {
 $orphans = & cmd /c "$dspCli --root $DspRoot get-orphans" 2>$null
 if ($orphans -and $orphans -notmatch "No orphans|0 orphan") {
     Write-Host ""
-    Write-Host "⚠ Orphaned DSP entities detected" -ForegroundColor Yellow
+    Write-Host "[WARN] Orphaned DSP entities detected" -ForegroundColor Yellow
     $issues++
 }
 

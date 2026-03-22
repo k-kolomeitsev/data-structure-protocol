@@ -35,7 +35,7 @@ function Install-ForAgent {
     param([string]$AgentName)
 
     $target = Get-TargetPath $AgentName
-    Write-Host "→ Installing DSP skill for $AgentName → $target"
+    Write-Host "=> Installing DSP skill for $AgentName => $target"
 
     New-Item -ItemType Directory -Force -Path $target | Out-Null
 
@@ -56,7 +56,7 @@ function Install-ForAgent {
         }
 
         Copy-Item -Path "$sourcePath\*" -Destination $target -Recurse -Force
-        Write-Host "✓ DSP skill installed for $AgentName" -ForegroundColor Green
+        Write-Host "[OK] DSP skill installed for $AgentName" -ForegroundColor Green
     }
     finally {
         if (Test-Path $zipPath) { Remove-Item $zipPath -Force }

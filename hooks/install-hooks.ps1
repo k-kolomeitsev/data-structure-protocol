@@ -8,7 +8,7 @@ Write-Host "Installing DSP git hooks..."
 Copy-Item (Join-Path $scriptDir "pre-commit") (Join-Path $hooksDir "pre-commit") -Force
 Copy-Item (Join-Path $scriptDir "pre-push") (Join-Path $hooksDir "pre-push") -Force
 
-Write-Host "✓ DSP git hooks installed" -ForegroundColor Green
+Write-Host "[OK] DSP git hooks installed" -ForegroundColor Green
 Write-Host ""
 Write-Host "Configuration (environment variables):"
 Write-Host "  DSP_PRECOMMIT_MODE=warn|block  (default: warn)"
