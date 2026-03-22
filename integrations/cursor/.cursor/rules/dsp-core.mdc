@@ -1,0 +1,37 @@
+---
+description: Core DSP awareness - read DSP before modifying code, update DSP after changes
+globs:
+alwaysApply: true
+---
+
+# Data Structure Protocol — Core Rules
+
+This project uses **DSP** (Data Structure Protocol) — a graph-based structural memory stored in `.dsp/`.
+
+## Before Modifying Code
+
+1. Run `dsp-cli read-toc` to see the project structure overview
+2. Run `dsp-cli find-by-source <file-path>` to check if the file you're about to change is tracked
+3. If tracked, run `dsp-cli get-entity <uid>` to understand its purpose, imports, and shared exports
+4. Run `dsp-cli get-parents <uid>` to see what depends on this entity — avoid breaking consumers
+
+## After Creating New Files
+
+1. Register modules/classes with `dsp-cli create-object --source <path> --purpose "<description>"`
+2. Register standalone functions with `dsp-cli create-function --source <path> --purpose "<description>" --owner <parent-uid>`
+3. Record dependencies with `dsp-cli add-import <uid> <target-uid> --why "<reason>"`
+4. Expose public APIs with `dsp-cli create-shared <uid> <export-name>`
+
+## After Deleting or Moving Files
+
+1. For deleted files: `dsp-cli remove-entity <uid>`
+2. For moved files: `dsp-cli move-entity <uid> --source <new-path>`
+3. Clean up orphaned imports: `dsp-cli get-orphans`
+
+## Quick Lookup Commands
+
+- `dsp-cli search "<query>"` — find entities by keyword
+- `dsp-cli get-children <uid>` — list sub-entities
+- `dsp-cli get-recipients <uid>` — find consumers of shared exports
+- `dsp-cli get-stats` — project-wide graph statistics
+- `dsp-cli detect-cycles` — find circular dependencies

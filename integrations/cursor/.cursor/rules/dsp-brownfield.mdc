@@ -1,0 +1,63 @@
+---
+description: DSP brownfield workflow - bootstrap existing projects into DSP
+globs:
+alwaysApply: false
+---
+
+# DSP Brownfield Workflow
+
+Use this workflow when integrating DSP into an existing codebase.
+
+## Phase 1: Bootstrap
+
+Initialize DSP and register the top-level module structure:
+
+```bash
+dsp-cli init
+```
+
+Start with major directories/modules — don't try to register every file at once:
+
+```bash
+dsp-cli create-object --source src/auth/ --purpose "Authentication and authorization module"
+dsp-cli create-object --source src/api/ --purpose "REST API routes and controllers"
+dsp-cli create-object --source src/database/ --purpose "Database connection, migrations, repositories"
+```
+
+## Phase 2: Navigate
+
+Use DSP to explore what's registered:
+
+```bash
+dsp-cli read-toc           # see all root entities
+dsp-cli search "auth"      # find by keyword
+dsp-cli get-entity <uid>   # inspect specific entity
+```
+
+As you encounter sub-modules and functions, register them incrementally:
+
+```bash
+dsp-cli create-function --source src/auth/jwt.service.ts --purpose "JWT token generation and validation" --owner <auth-uid>
+```
+
+## Phase 3: Wire Dependencies
+
+As you discover cross-module dependencies during development:
+
+```bash
+dsp-cli add-import <consumer-uid> <provider-uid> --why "uses authentication middleware"
+dsp-cli create-shared <provider-uid> AuthMiddleware
+```
+
+## Phase 4: Maintain
+
+During ongoing development:
+
+1. **New features** → register entities, imports, shared exports
+2. **Refactors** → `get-parents` for impact analysis, then `move-entity` / update imports
+3. **Deletions** → `remove-entity`, `remove-import`, `remove-shared`
+4. **Periodic health** → `get-orphans`, `detect-cycles`, `get-stats`
+
+## Key Principle
+
+You don't need 100% coverage on day one. Register entities as you work with them. DSP grows organically — the most-touched modules get registered first, which is exactly where structural memory provides the most value.

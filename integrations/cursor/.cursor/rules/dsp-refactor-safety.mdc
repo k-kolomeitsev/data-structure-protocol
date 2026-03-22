@@ -1,0 +1,48 @@
+---
+description: DSP impact analysis before refactoring
+globs:
+alwaysApply: false
+---
+
+# DSP — Refactor Safety
+
+Before refactoring code that other modules depend on, perform impact analysis using DSP.
+
+## Step 1: Identify the Entity
+
+```bash
+dsp-cli find-by-source <file-being-refactored>
+```
+
+## Step 2: Check Who Depends on It
+
+```bash
+# Direct dependents — who imports this entity
+dsp-cli get-parents <uid>
+
+# Shared export consumers — who uses its public API
+dsp-cli get-recipients <uid>
+```
+
+## Step 3: Assess Impact
+
+- If `get-parents` returns entities → changing this entity's interface will break them
+- If `get-recipients` returns consumers → changing shared exports will affect downstream consumers
+- Review the `--why` field on each import to understand the coupling reason
+
+## Step 4: Refactor Safely
+
+After making changes:
+
+1. **Renamed file** → `dsp-cli move-entity <uid> --source <new-path>`
+2. **Changed public API** → update shared exports: `dsp-cli remove-shared` / `dsp-cli create-shared`
+3. **Removed dependency** → `dsp-cli remove-import <uid> <target-uid>`
+4. **Added dependency** → `dsp-cli add-import <uid> <target-uid> --why "<reason>"`
+5. **Updated purpose** → `dsp-cli update-description <uid> --purpose "<new purpose>"`
+
+## Step 5: Verify
+
+```bash
+dsp-cli get-orphans      # no broken references
+dsp-cli detect-cycles    # no circular dependencies
+```

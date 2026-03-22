@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# DSP pre-commit hook — deterministic consistency check
+set -euo pipefail
+
+DSP_MODE="${DSP_PRECOMMIT_MODE:-warn}"
+DSP_ROOT="$(git rev-parse --show-toplevel)"
+
+for candidate in \
+  "$DSP_ROOT/.cursor/skills/data-structure-protocol/scripts/dsp-cli.py" \
+  "$DSP_ROOT/.claude/skills/data-structure-protocol/scripts/dsp-cli.py" \
+  "$DSP_ROOT/.codex/skills/data-structure-protocol/scripts/dsp-cli.py" \
+  "$DSP_ROOT/skills/data-structure-protocol/scripts/dsp-cli.py"; do
+  if [[ -f "$candidate" ]]; then
+    DSP_CLI="python $candidate"
+    break
+  fi
+done
+
+DSP_CLI="${DSP_CLI:-}"
+if [[ -z "$DSP_CLI" ]]; then
+  echo "[DSP] CLI not found. Skipping DSP check."
+  exit 0
+fi
+
+if [[ ! -d "$DSP_ROOT/.dsp" ]]; then
+  exit 0
+fi
+
+SKIP_PATTERNS="${DSP_SKIP_PATTERNS:-*.md,*.txt,*.json,*.yml,*.yaml,*.lock,*.log}"
+
+WARNINGS=()
+ERRORS=()
+
+should_track() {
+  local file="$1"
+  for pattern in ${SKIP_PATTERNS//,/ }; do
+    case "$file" in $pattern) return 1 ;; esac
+  done
+  [[ "$file" == *.ts || "$file" == *.tsx || "$file" == *.js || "$file" == *.jsx || \
+     "$file" == *.py || "$file" == *.go || "$file" == *.rs || "$file" == *.java || \
+     "$file" == *.rb || "$file" == *.vue || "$file" == *.svelte ]]
+}
+
+while IFS= read -r file; do
+  [[ -z "$file" ]] && continue
+  if should_track "$file"; then
+    result=$($DSP_CLI --root "$DSP_ROOT" find-by-source "$file" 2>/dev/null || true)
+    if [[ -z "$result" ]]; then
+      WARNINGS+=("  NEW/MODIFIED file not in DSP: $file")
+    fi
+  fi
+done < <(git diff --cached --name-only --diff-filter=ACMR)
+
+while IFS= read -r file; do
+  [[ -z "$file" ]] && continue
+  result=$($DSP_CLI --root "$DSP_ROOT" find-by-source "$file" 2>/dev/null || true)
+  if [[ -n "$result" ]]; then
+    ERRORS+=("  DELETED file still in DSP: $file")
+  fi
+done < <(git diff --cached --name-only --diff-filter=D)
+
+orphans=$($DSP_CLI --root "$DSP_ROOT" get-orphans 2>/dev/null || true)
+if [[ -n "$orphans" && "$orphans" != *"No orphans"* && "$orphans" != *"0 orphan"* ]]; then
+  WARNINGS+=("  Orphaned DSP entities detected. Run: dsp-cli get-orphans")
+fi
+
+if [[ ${#ERRORS[@]} -gt 0 || ${#WARNINGS[@]} -gt 0 ]]; then
+  echo ""
+  echo "[DSP] Consistency check results:"
+  echo ""
+
+  if [[ ${#ERRORS[@]} -gt 0 ]]; then
+    echo "ERRORS (DSP graph is inconsistent):"
+    printf '%s\n' "${ERRORS[@]}"
+    echo ""
+  fi
+
+  if [[ ${#WARNINGS[@]} -gt 0 ]]; then
+    echo "WARNINGS (DSP may need updating):"
+    printf '%s\n' "${WARNINGS[@]}"
+    echo ""
+  fi
+
+  if [[ "$DSP_MODE" == "block" && ${#ERRORS[@]} -gt 0 ]]; then
+    echo "Commit blocked. Fix DSP errors first, or set DSP_PRECOMMIT_MODE=warn to allow."
+    exit 1
+  fi
+
+  echo "Tip: Run './hooks/dsp-agent-review.sh' for deep agent-assisted review."
+  echo ""
+fi
+
+exit 0

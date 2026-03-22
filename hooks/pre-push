@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# DSP pre-push hook — full graph integrity check
+set -euo pipefail
+
+DSP_ROOT="$(git rev-parse --show-toplevel)"
+
+for candidate in \
+  "$DSP_ROOT/.cursor/skills/data-structure-protocol/scripts/dsp-cli.py" \
+  "$DSP_ROOT/.claude/skills/data-structure-protocol/scripts/dsp-cli.py" \
+  "$DSP_ROOT/.codex/skills/data-structure-protocol/scripts/dsp-cli.py" \
+  "$DSP_ROOT/skills/data-structure-protocol/scripts/dsp-cli.py"; do
+  if [[ -f "$candidate" ]]; then
+    DSP_CLI="python $candidate"
+    break
+  fi
+done
+
+DSP_CLI="${DSP_CLI:-}"
+if [[ -z "$DSP_CLI" || ! -d "$DSP_ROOT/.dsp" ]]; then
+  exit 0
+fi
+
+echo "[DSP] Running full graph integrity check before push..."
+
+orphans=$($DSP_CLI --root "$DSP_ROOT" get-orphans 2>/dev/null || true)
+if [[ -n "$orphans" && "$orphans" != *"No orphans"* && "$orphans" != *"0 orphan"* ]]; then
+  echo "[DSP] WARNING: Orphaned entities found:"
+  echo "$orphans"
+fi
+
+cycles=$($DSP_CLI --root "$DSP_ROOT" detect-cycles 2>/dev/null || true)
+if [[ -n "$cycles" && "$cycles" != *"No cycles"* && "$cycles" != *"0 cycle"* ]]; then
+  echo "[DSP] WARNING: Circular dependencies detected:"
+  echo "$cycles"
+fi
+
+stats=$($DSP_CLI --root "$DSP_ROOT" get-stats 2>/dev/null || true)
+echo "[DSP] Graph stats:"
+echo "$stats"
+echo ""
+
+exit 0

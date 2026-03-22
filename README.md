@@ -1,52 +1,64 @@
+[![GitHub stars](https://img.shields.io/github/stars/k-kolomeitsev/data-structure-protocol?style=social)](https://github.com/k-kolomeitsev/data-structure-protocol)
+[![License](https://img.shields.io/github/license/k-kolomeitsev/data-structure-protocol)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
+[![Claude Code](https://img.shields.io/badge/Claude_Code-supported-green)]()
+[![Cursor](https://img.shields.io/badge/Cursor-supported-green)]()
+[![Codex](https://img.shields.io/badge/Codex-supported-green)]()
+
 # Data Structure Protocol (DSP)
-**Graph-based long-term structural memory for LLM coding agents.**
 
-DSP externalizes your codebase “map” into a small, versionable graph stored in `.dsp/`: entities (modules/functions/external deps), dependencies (imports), public API (shared/exports), and **reasons** for every connection (`why`).
-
-This repository ships:
-- **The DSP architecture/spec**: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
-- **A long-form introduction article**: [`article.md`](./article.md)
-- **A ready-to-use agent skill** (kept in repo root for universal installation): [`skills/data-structure-protocol`](./skills/data-structure-protocol)
-  - `SKILL.md` (agent instructions)
-  - `scripts/dsp-cli.py` (reference CLI)
-  - `references/` (storage format, operations, bootstrap procedure)
+**The missing memory layer for AI-assisted development**
 
 ---
 
-## Why DSP (the problem it solves)
+## The problem
 
-Anyone who works with agents recognizes the pattern: **the first 5–15 minutes are spent not on the task, but on “getting oriented.”**
+Your agent re-reads the same codebase every session. **DSP fixes that.**
 
-- Where is the entry point?
-- What depends on what (and *why*)?
-- What is actually public API vs internal details?
-- Which modules/resources/configs are silently coupled?
+Every time you start a new task, your AI coding agent spends the first 5–15 minutes "getting oriented" — scanning files, tracing imports, figuring out what depends on what. On large projects this becomes a constant tax on tokens and attention. Context is rebuilt from scratch, every single time.
 
-On small projects this is annoying. On large ones it becomes a constant tax on tokens and attention.
+DSP is a graph-based long-term structural memory stored in `.dsp/`. It gives agents a persistent, versionable map of your codebase — entities, dependencies, public APIs, and the *reasons* behind every connection — so they can pick up exactly where they left off.
 
-DSP reduces that tax by letting agents:
-- **Navigate structure without loading the whole repo into the context window**
-- **Find dependencies, consumers, and “why” quickly**
-- **Avoid context loss between tasks** (DSP is external, persistent memory)
-
-> **Honest trade-off:** bootstrapping DSP for a large project is expensive (time, attention, often tokens).  
-> It typically pays off over the lifetime of the project through lower token usage, faster dependency discovery, and more reliable agent execution.
+> **DSP is not another workflow framework.** It's the persistent structural memory layer that's missing from every AI coding workflow.
 
 ---
 
-## What DSP is (and what it is not)
+## Install
 
-**DSP is NOT human-facing documentation and NOT an AST dump.**  
-It captures:
-- **Meaning**: why an entity exists (`purpose`)
-- **Boundaries**: what it imports / exposes (`imports`, `shared`)
-- **Reasons**: why connections exist (`exports/` reverse index)
+**macOS / Linux:**
 
-DSP works with any codebase and artifact system (TS/JS, Python, Go, infra, SQL, assets, configs, etc.).
+```bash
+curl -fsSL https://raw.githubusercontent.com/k-kolomeitsev/data-structure-protocol/main/install.sh | bash
+```
+
+**Windows:**
+
+```powershell
+irm https://raw.githubusercontent.com/k-kolomeitsev/data-structure-protocol/main/install.ps1 | iex
+```
+
+**Codex:**
+
+```
+$skill-installer install https://github.com/k-kolomeitsev/data-structure-protocol/tree/main/skills/data-structure-protocol
+```
 
 ---
 
-## How it works (mental model)
+## What you get
+
+- **Agent stops re-learning your project every session** — structural context persists across tasks, sessions, and even team members
+- **Dependency discovery in seconds, not minutes** — graph traversal replaces full-repo scanning
+- **Impact analysis before refactors** — know what breaks before you touch it
+- **Safer changes on brownfield codebases** — hidden couplings become visible edges in the graph
+- **Works with Claude Code, Cursor, Codex — no lock-in** — DSP is an agent skill, not a platform
+- **Git-native and versionable** — `.dsp/` is plain text, diffs cleanly, reviews like code
+
+> **Honest trade-off:** bootstrapping DSP on a large project takes real effort (time, tokens, discipline). It pays back over the project lifetime through lower per-task token usage, faster discovery, and more predictable agent behavior.
+
+---
+
+## How it works
 
 ```
 ┌──────────────────────┐
@@ -56,39 +68,158 @@ DSP works with any codebase and artifact system (TS/JS, Python, Go, infra, SQL, 
            │  create/update graph as you work
            ▼
 ┌──────────────────────┐
-│   DSP Builder / CLI   │
-│   (dsp-cli.py)        │
+│   DSP Builder / CLI  │
+│   (dsp-cli.py)       │
 └──────────┬───────────┘
            │  writes
            ▼
 ┌──────────────────────┐
-│        .dsp/          │
-│ entity graph + whys   │
+│        .dsp/         │
+│ entity graph + whys  │
 └──────────┬───────────┘
            │  reads/searches/traverses
            ▼
 ┌──────────────────────┐
-│     LLM Orchestrator  │
-│ (your agent + skill)  │
+│   LLM Orchestrator   │
+│ (your agent + skill) │
 └──────────────────────┘
 ```
 
+As you work, DSP builds a lightweight graph of your codebase: modules, functions, dependencies, and public APIs. Each connection carries a `why` — the reason it exists. Your agent reads this graph instead of re-scanning the repo, navigates structure through graph traversal, and keeps the graph updated as code evolves.
+
+The graph lives in `.dsp/` — plain text files that commit, diff, and merge like any other source artifact.
+
 ---
 
-## Core concepts (the minimal vocabulary)
+## Quick start
 
-- **Entity**: a node in the graph. Two base kinds:
-  - **Object**: any “thing” that isn’t a function (module/file/class/config/resource/external dependency).
-  - **Function**: function/method/handler/pipeline.
-- **UID identity**: entities are identified by stable UIDs (`obj-<8hex>`, `func-<8hex>`). File paths are attributes, not identity.
-- **`imports`**: outgoing edges — what this entity uses.
-- **`shared`**: public API of an object — what it exposes.
-- **`exports/` reverse index**: incoming edges — **who imports this entity and why**.
-- **TOC**: a per-entrypoint table of contents listing all reachable entities from that root (`.dsp/TOC` or `.dsp/TOC-<rootUid>`).
+### Option A: Start from the boilerplate (fastest)
 
-### UID markers in source code
+[**dsp-boilerplate**](https://github.com/k-kolomeitsev/dsp-boilerplate) is a production-ready fullstack starter — **NestJS 11 + React 19 + Vite 7** in Docker Compose, with a **fully initialized DSP graph**, pre-configured skills for all agents, Cursor rules, git hooks, and CI.
 
-For entities *inside* a file (exported functions/classes/etc.), DSP anchors identity with a comment marker:
+```bash
+git clone https://github.com/k-kolomeitsev/dsp-boilerplate.git my-project
+cd my-project
+docker-compose up -d
+```
+
+Everything is wired: `.dsp/` graph with two roots (backend + frontend), `@dsp` markers in all source files, DSP skills for Cursor, Claude Code, and Codex. You can start coding and the agent already knows the entire project structure.
+
+### Option B: Add DSP to any project
+
+#### 1. Initialize
+
+```bash
+python dsp-cli.py --root . init
+```
+
+#### 2. Create entities
+
+```bash
+python dsp-cli.py --root . create-object "src/app.ts" "Main application entrypoint"
+# → obj-a1b2c3d4
+
+python dsp-cli.py --root . create-function "src/app.ts#start" "Starts the HTTP server" --owner obj-a1b2c3d4
+# → func-7f3a9c12
+
+python dsp-cli.py --root . add-import obj-a1b2c3d4 obj-deadbeef "HTTP routing"
+```
+
+#### 3. Navigate
+
+```bash
+python dsp-cli.py --root . search "authentication"
+python dsp-cli.py --root . find-by-source "src/auth/index.ts"
+python dsp-cli.py --root . get-children obj-a1b2c3d4 --depth 2
+```
+
+#### 4. Impact analysis
+
+```bash
+python dsp-cli.py --root . get-parents obj-a1b2c3d4 --depth inf
+python dsp-cli.py --root . get-recipients obj-a1b2c3d4
+```
+
+> Before any refactor, run `get-parents` or `get-recipients` to see everything that depends on the entity you're about to change.
+
+---
+
+## Supported agents
+
+DSP installs as a skill for your agent. Pick your agent and scope.
+
+Don't have a coding agent yet? Install one first:
+
+| Agent | Install |
+|---|---|
+| **Claude Code** | `npm i -g @anthropic-ai/claude-code` — [docs](https://docs.anthropic.com/en/docs/claude-code/setup) |
+| **Cursor** | [cursor.com/downloads](https://www.cursor.com/downloads) — [docs](https://docs.cursor.com) |
+| **Codex CLI** | `npm i -g @openai/codex` — [docs](https://developers.openai.com/codex/cli) \| [github](https://github.com/openai/codex) |
+
+### macOS / Linux
+
+| Agent | Project Install | Global Install |
+|---|---|---|
+| **Cursor** | `curl -fsSL https://raw.githubusercontent.com/k-kolomeitsev/data-structure-protocol/main/install.sh \| bash -s -- cursor` | `curl -fsSL https://raw.githubusercontent.com/k-kolomeitsev/data-structure-protocol/main/install.sh \| bash -s -- --global cursor` |
+| **Claude Code** | `curl -fsSL https://raw.githubusercontent.com/k-kolomeitsev/data-structure-protocol/main/install.sh \| bash -s -- claude` | `curl -fsSL https://raw.githubusercontent.com/k-kolomeitsev/data-structure-protocol/main/install.sh \| bash -s -- --global claude` |
+| **Codex** | `curl -fsSL https://raw.githubusercontent.com/k-kolomeitsev/data-structure-protocol/main/install.sh \| bash -s -- codex` | `curl -fsSL https://raw.githubusercontent.com/k-kolomeitsev/data-structure-protocol/main/install.sh \| bash -s -- --global codex` |
+
+### Windows
+
+```powershell
+# Project-level (current directory)
+irm https://raw.githubusercontent.com/k-kolomeitsev/data-structure-protocol/main/install.ps1 | iex
+
+# With specific agent
+powershell -ExecutionPolicy Bypass -File install.ps1 -Agent cursor
+powershell -ExecutionPolicy Bypass -File install.ps1 -Agent claude
+powershell -ExecutionPolicy Bypass -File install.ps1 -Agent codex
+
+# Global (user-level)
+powershell -ExecutionPolicy Bypass -File install.ps1 -Agent cursor -Global
+```
+
+### Codex (alternative)
+
+```
+$skill-installer install https://github.com/k-kolomeitsev/data-structure-protocol/tree/main/skills/data-structure-protocol
+```
+
+> **Project install** puts the skill in your repo (`.cursor/skills/`, `.claude/skills/`, `.codex/skills/`).
+> **Global install** puts it in your home directory so it's available across all projects.
+
+---
+
+## DSP vs alternatives
+
+Modern agents already know how to plan, write tests, verify, and ship. They don't need process wrappers. What they lack is **memory**.
+
+| | **DSP** | **GSD** | **Superpowers** |
+|---|---|---|---|
+| **Core idea** | Persistent structural memory | Process/confidence wrapper | Engineering discipline (TDD) |
+| **What it solves** | Agent has no memory of project between sessions | Agent doesn't follow structured workflow | Agent might skip tests/planning |
+| **Is the problem real?** | Yes — no model has built-in project memory | Diminishing — modern models plan and verify natively | Diminishing — modern models know TDD when prompted |
+| **Persistent memory** | Full graph across sessions | None | None |
+| **Impact analysis** | Built-in (graph traversal) | No | No |
+| **Brownfield** | First-class | One-time scan | No explicit support |
+| **Overhead** | Low | Medium | Medium |
+
+> Modern agents are smarter than most mid-level engineers. They plan, they test, they verify. They just can't remember your project. DSP is the fix. [Detailed comparison with GSD](./docs/comparisons/dsp-vs-gsd.md) | [Detailed comparison with Superpowers](./docs/comparisons/dsp-vs-superpowers.md)
+
+---
+
+## Core concepts
+
+| Concept | What it is |
+|---|---|
+| **Entity** | A node in the graph. Either an **Object** (module/file/class/config/external dep) or a **Function** (function/method/handler) |
+| **UID** | Stable identifier (`obj-<8hex>`, `func-<8hex>`). File paths are attributes, not identity — entities survive renames and moves |
+| **imports** | Outgoing edges — what this entity uses, with a `why` for each connection |
+| **shared** | Public API of an object — what it exposes to consumers |
+| **exports/** | Reverse index — who imports this entity and why (incoming edges) |
+| **TOC** | Per-entrypoint table of contents listing all reachable entities from a root |
+
+UID markers anchor identity in source code:
 
 ```ts
 // @dsp func-7f3a9c12
@@ -101,226 +232,98 @@ def process_payment(order):
     ...
 ```
 
-This stays stable across formatting, line shifts, and refactors.
-
 ---
 
-## Storage format (`.dsp/`)
+## Storage format
 
-DSP is intentionally simple: **plain text files** in a deterministic directory layout.
+`.dsp/` is plain text in a deterministic directory layout:
 
-```text
+```
 .dsp/
-├── TOC                     # Table of contents (single root)
-├── TOC-<rootUid>           # One TOC per root (multi-root projects)
-├── obj-a1b2c3d4/           # Object entity
-│   ├── description         # source, kind, purpose (+ optional freeform sections)
-│   ├── imports             # imported UIDs (one per line)
-│   ├── shared              # exported/shared UIDs (one per line)
-│   └── exports/            # reverse index: who imports this entity and why
-│       ├── <importer_uid>  # why the whole object is imported
-│       └── <shared_uid>/   # per shared entity
-│           ├── description # what is exported (auto-filled from shared's purpose)
-│           └── <importer_uid>  # why this shared is imported
-└── func-7f3a9c12/          # Function entity
+├── TOC                        # Table of contents (single root)
+├── TOC-<rootUid>              # One TOC per root (multi-root projects)
+├── obj-a1b2c3d4/              # Object entity
+│   ├── description            # source, kind, purpose
+│   ├── imports                # imported UIDs (one per line)
+│   ├── shared                 # exported/shared UIDs (one per line)
+│   └── exports/               # reverse index
+│       ├── <importer_uid>     # why the whole object is imported
+│       └── <shared_uid>/      # per shared entity
+│           ├── description    # what is exported
+│           └── <importer_uid> # why this shared is imported
+└── func-7f3a9c12/             # Function entity
     ├── description
     ├── imports
     └── exports/
-        └── <owner_uid>     # ownership link (function belongs to object)
+        └── <owner_uid>        # ownership link
 ```
 
-The full specification is in [`ARCHITECTURE.md`](./ARCHITECTURE.md) and summarized in:
-- [`skills/data-structure-protocol/references/storage-format.md`](./skills/data-structure-protocol/references/storage-format.md)
+Full specification: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 
 ---
 
-## Bootstrap (initial mapping) — expensive, but foundational
+## Git hooks & CI
 
-Bootstrap is a DFS traversal from root entrypoint(s). For each root:
-- Create a dedicated TOC file.
-- Document the root entity first.
-- Walk local (non-external) imports depth-first, documenting every reachable file/artifact.
-- Record externals as `kind: external`, but **do not descend** into dependency internals (`node_modules`, `site-packages`, etc.).
+DSP ships with hooks that keep the graph in sync with your code:
 
-See:
-- [`skills/data-structure-protocol/references/bootstrap.md`](./skills/data-structure-protocol/references/bootstrap.md)
+| Hook | What it does | LLM required |
+|---|---|---|
+| **pre-commit** | Checks staged files against DSP graph — flags new files without entities, deleted files still referenced, orphans | No |
+| **pre-push** | Full graph integrity — orphan detection, cycle detection, stats summary | No |
+| **Agent-assisted review** | Deep semantic analysis of changes against DSP entities, dependency impact | Yes |
 
-### Cost vs ROI (no sugar-coating)
+Install hooks:
 
-Bootstrapping a large repo can be its own mini-project:
-- Multiple roots / monorepos
-- Many transitive imports
-- Discipline needed to write minimal-but-accurate `purpose`
-- Discipline needed to write `why` for edges (this is where a lot of value lives)
-
-It typically pays back via:
-- Lower token usage per task (less “orientation”)
-- Faster discovery of dependencies/consumers
-- Less context loss between tasks
-- Safer, more predictable refactors (impact analysis is cheap)
-
----
-
-## The `data-structure-protocol` skill
-
-The skill is a compact package that teaches agents how to:
-- Navigate `.dsp` before touching code (search/find-by-source/read-toc)
-- Update DSP while writing code (create-object/create-function/create-shared/add-import)
-- Keep the graph consistent while deleting/moving code (remove-*/move-entity)
-- Avoid busywork (don’t touch DSP for internal-only changes)
-
-Skill location in this repo (universal layout):
-- `skills/data-structure-protocol/SKILL.md`
-- `skills/data-structure-protocol/scripts/dsp-cli.py`
-- `skills/data-structure-protocol/references/*`
-
----
-
-## Installation
-
-This repository keeps skills in `skills/` so you can install them into whichever assistant you use.
-
-### Cursor (recommended)
-
-Copy the skill into your project’s `.cursor/skills/`:
-
-```powershell
-New-Item -ItemType Directory -Force .\.cursor\skills | Out-Null
-Copy-Item -Recurse -Force .\skills\data-structure-protocol .\.cursor\skills\data-structure-protocol
+```bash
+./hooks/install-hooks.sh          # macOS/Linux
+.\hooks\install-hooks.ps1         # Windows
 ```
 
-`skills/` is the universal, repo-friendly location. `.cursor/skills/` is just Cursor’s installation target so the skill can be discovered/activated by Cursor.
-
-### Other assistants (generic)
-
-If your assistant supports “skills” via a folder convention, copy `skills/data-structure-protocol` into the appropriate directory for that tool (for example: `.claude/skills/`, `.continue/skills/`, etc.).
-
-The skill is plain Markdown + supporting files, so installation is typically just “copy the folder”.
+See [`hooks/`](./hooks/) for configuration, standalone scripts, and GitHub Actions integration.
 
 ---
 
-## Prerequisites
+## Integration packs
 
-- **Python 3.10+** (the CLI uses modern type syntax like `str | None`)
+Ready-made configurations for each supported agent:
 
----
+| Agent | Skill location |
+|---|---|
+| **Cursor** | `.cursor/skills/data-structure-protocol/` |
+| **Claude Code** | `.claude/skills/data-structure-protocol/` |
+| **Codex** | `.codex/skills/data-structure-protocol/` |
 
-## Quick start
-
-### 0) Point to the CLI
-
-The CLI is shipped with the skill. Pick the path you want to use:
-
-```powershell
-# If your repo keeps skills in the universal root location:
-$DSP_CLI = ".\skills\data-structure-protocol\scripts\dsp-cli.py"
-
-# If you prefer running the copy installed into Cursor’s skill folder:
-# $DSP_CLI = ".\.cursor\skills\data-structure-protocol\scripts\dsp-cli.py"
-```
-
-### 1) Initialize `.dsp/`
-
-```powershell
-python $DSP_CLI --root . init
-```
-
-### 2) Create entities and edges (as you work)
-
-```powershell
-# Create a module/file entity
-python $DSP_CLI --root . create-object "src/app.ts" "Main application entrypoint"
-
-# Create an exported function entity (owner = module UID)
-python $DSP_CLI --root . create-function "src/app.ts#start" "Starts the HTTP server" --owner obj-a1b2c3d4
-
-# Mark exports (public API)
-python $DSP_CLI --root . create-shared obj-a1b2c3d4 func-7f3a9c12
-
-# Record imports with a reason (why)
-python $DSP_CLI --root . add-import obj-a1b2c3d4 obj-deadbeef "HTTP routing"
-```
-
-### 3) Navigate the graph (instead of guessing)
-
-```powershell
-# Search by meaning/keywords
-python $DSP_CLI --root . search "authentication"
-
-# Find entities by source file path
-python $DSP_CLI --root . find-by-source "src/auth/index.ts"
-
-# Inspect one entity
-python $DSP_CLI --root . get-entity obj-a1b2c3d4
-
-# Downward dependency tree
-python $DSP_CLI --root . get-children obj-a1b2c3d4 --depth 2
-
-# Upward dependency tree / impact analysis
-python $DSP_CLI --root . get-parents obj-a1b2c3d4 --depth inf
-python $DSP_CLI --root . get-recipients obj-a1b2c3d4
-```
+Each integration includes the skill instructions (`SKILL.md`), CLI (`dsp-cli.py`), and reference docs. See [`integrations/`](./integrations/) for agent-specific setup guides.
 
 ---
 
-## Agent prompt (copy/paste)
+## Documentation
 
-Use this snippet as a “system/user” preface when you want an agent to respect DSP:
-
-> **This project uses DSP (Data Structure Protocol).**  
-> The `.dsp/` directory is the entity graph of this project: modules, functions, dependencies, public API. It is your long-term memory of the code structure.  
->  
-> **Rules:**  
-> - Before changing code: locate affected entities via `search`, `find-by-source`, or `read-toc`, then read `description`/`imports`.  
-> - When creating modules/functions/exports/imports: register them with DSP immediately (`create-object`, `create-function`, `create-shared`, `add-import` with `why`).  
-> - When moving/deleting: use `move-entity` / `remove-*` to keep the graph consistent.  
-> - Do not update DSP for internal-only changes that don’t affect purpose/dependencies.  
-
----
-
-## Operations reference
-
-The CLI operations are intentionally aligned with the architecture specification.
-
-- Spec: [`ARCHITECTURE.md` §5](./ARCHITECTURE.md)
-- CLI reference: [`skills/data-structure-protocol/references/operations.md`](./skills/data-structure-protocol/references/operations.md)
-
-Key commands (non-exhaustive):
-- Create: `init`, `create-object`, `create-function`, `create-shared`, `add-import`
-- Update: `update-description`, `update-import-why`, `move-entity`
-- Delete: `remove-import`, `remove-shared`, `remove-entity`
-- Read/traverse: `get-entity`, `get-children`, `get-parents`, `get-path`, `read-toc`
-- Diagnostics: `detect-cycles`, `get-orphans`, `get-stats`
-
----
-
-## Recommended workflow (to keep DSP healthy)
-
-DSP stays valuable only if it stays:
-- **Small** (minimal sufficient context, controlled granularity)
-- **Accurate** (imports/shared/whys reflect reality)
-- **Maintained as you code** (not as a periodic “documentation sprint”)
-
-Rules of thumb:
-- Add UIDs for **file-level Objects** and **public/shared entities**.
-- Track every import edge that matters, and always include **`why`**.
-- Treat `.dsp/` as a first-class artifact: review diffs, keep it consistent.
+| Document | Description |
+|---|---|
+| [**dsp-boilerplate**](https://github.com/k-kolomeitsev/dsp-boilerplate) | Fullstack boilerplate (NestJS + React + Docker Compose) with DSP pre-initialized — the fastest way to start |
+| [**GETTING_STARTED.md**](./GETTING_STARTED.md) | Step-by-step guide from install to first impact analysis |
+| [**ARCHITECTURE.md**](./ARCHITECTURE.md) | Full protocol specification — entity model, storage format, operations |
+| [**docs/comparisons/**](./docs/comparisons/) | Detailed comparisons with GSD, Superpowers, and other tools |
+| [**docs/workflows/**](./docs/workflows/) | Workflow guides — bootstrap, brownfield adoption, team usage |
+| [**integrations/**](./integrations/) | Agent-specific integration guides and configurations |
 
 ---
 
 ## Contributing
 
-Contributions that improve:
-- The architecture spec (`ARCHITECTURE.md`)
-- The skill instructions (`skills/data-structure-protocol/SKILL.md`)
-- The CLI behavior (keeping it aligned with the spec)
-- Reference docs/examples
+Contributions are welcome. Areas where help is most valuable:
 
-…are welcome. Please keep changes minimal, explicit, and consistent with the “minimal sufficient context” philosophy.
+- **Architecture spec** — improving [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+- **CLI** — keeping `dsp-cli.py` aligned with the spec
+- **Skill instructions** — refining [`SKILL.md`](./skills/data-structure-protocol/SKILL.md) for agent clarity
+- **New integrations** — adding support for more agents and editors
+- **Documentation** — examples, workflow guides, comparisons
+
+Please keep changes minimal, explicit, and consistent with the "minimal sufficient context" philosophy.
 
 ---
 
 ## License
 
-This project is licensed under the **Apache License 2.0**. See [`LICENSE`](./LICENSE).
-
+Apache License 2.0 — see [`LICENSE`](./LICENSE).

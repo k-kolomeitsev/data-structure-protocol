@@ -1,0 +1,49 @@
+---
+description: Register new files in DSP automatically
+globs: "**/*.ts,**/*.tsx,**/*.js,**/*.jsx,**/*.py,**/*.go,**/*.rs,**/*.java,**/*.rb,**/*.vue,**/*.svelte"
+alwaysApply: false
+---
+
+# DSP — Register New Files
+
+When creating a new source file in this project, register it in DSP.
+
+## For a New Module or Class
+
+```bash
+dsp-cli create-object --source <file-path> --purpose "<what this module does>"
+```
+
+## For a New Standalone Function
+
+```bash
+dsp-cli create-function --source <file-path> --purpose "<what this function does>" --owner <parent-uid>
+```
+
+Find the parent UID:
+
+```bash
+dsp-cli find-by-source <parent-directory-or-file>
+```
+
+## After Registration
+
+1. Add imports for any dependencies this file uses:
+
+```bash
+dsp-cli add-import <new-uid> <dependency-uid> --why "<reason>"
+```
+
+2. If the file exposes a public API consumed by other modules:
+
+```bash
+dsp-cli create-shared <new-uid> <export-name>
+```
+
+## When to Skip
+
+Do not register:
+- Test files (unless they represent a test architecture module)
+- Config files (.env, tsconfig.json, etc.)
+- Generated files (compiled output, lock files)
+- One-off scripts not part of the application architecture

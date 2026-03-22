@@ -1,0 +1,99 @@
+name: DSP Consistency Check
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+
+jobs:
+  dsp-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Detect DSP CLI
+        id: detect
+        run: |
+          for path in \
+            ".cursor/skills/data-structure-protocol/scripts/dsp-cli.py" \
+            ".claude/skills/data-structure-protocol/scripts/dsp-cli.py" \
+            ".codex/skills/data-structure-protocol/scripts/dsp-cli.py" \
+            "skills/data-structure-protocol/scripts/dsp-cli.py"; do
+            if [[ -f "$path" ]]; then
+              echo "cli=python $path" >> "$GITHUB_OUTPUT"
+              break
+            fi
+          done
+
+      - name: Check DSP exists
+        id: check-dsp
+        run: |
+          if [[ ! -d ".dsp" ]]; then
+            echo "No .dsp/ directory. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: DSP graph integrity
+        if: steps.check-dsp.outputs.skip != 'true' && hashFiles('.dsp/**') != ''
+        run: |
+          CLI="${{ steps.detect.outputs.cli }}"
+          if [[ -z "$CLI" ]]; then
+            echo "DSP CLI not found. Skipping."
+            exit 0
+          fi
+
+          echo "### DSP Consistency Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          stats=$($CLI --root . get-stats 2>/dev/null || echo "unavailable")
+          echo "#### Stats" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "$stats" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          orphans=$($CLI --root . get-orphans 2>/dev/null || echo "none")
+          if [[ -n "$orphans" && "$orphans" != *"No orphans"* && "$orphans" != *"no orphans"* ]]; then
+            echo "#### Orphaned Entities" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "$orphans" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          cycles=$($CLI --root . detect-cycles 2>/dev/null || echo "none")
+          if [[ -n "$cycles" && "$cycles" != *"No cycles"* && "$cycles" != *"no cycles"* ]]; then
+            echo "#### Circular Dependencies" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "$cycles" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            changed=$(git diff --name-only ${{ github.event.pull_request.base.sha }}..HEAD)
+            echo "#### Changed Files DSP Coverage" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            for file in $changed; do
+              result=$($CLI --root . find-by-source "$file" 2>/dev/null || true)
+              if [[ -n "$result" && "$result" != *"not found"* ]]; then
+                echo "✓ $file" >> "$GITHUB_STEP_SUMMARY"
+              else
+                ext="${file##*.}"
+                case "$ext" in
+                  ts|tsx|js|jsx|py|go|rs|java|rb|vue|svelte)
+                    echo "⚠ $file (not in DSP)" >> "$GITHUB_STEP_SUMMARY"
+                    ;;
+                esac
+              fi
+            done
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "DSP consistency check complete" >> "$GITHUB_STEP_SUMMARY"

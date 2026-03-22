@@ -1,0 +1,47 @@
+---
+description: Update DSP shared/exports when public API changes
+globs:
+alwaysApply: false
+---
+
+# DSP — Public API Changes
+
+When changing a module's public API (exported functions, classes, interfaces), update DSP shared/exports to keep the graph accurate.
+
+## When Adding a New Public Export
+
+```bash
+# Find the entity
+dsp-cli find-by-source <file-path>
+
+# Register the new export
+dsp-cli create-shared <uid> <ExportName>
+```
+
+## When Removing a Public Export
+
+```bash
+# Check who consumes it first
+dsp-cli get-recipients <uid>
+
+# Remove only if no active consumers, or after updating consumers
+dsp-cli remove-shared <uid> <ExportName>
+```
+
+## When Renaming a Public Export
+
+```bash
+# Remove old, add new
+dsp-cli remove-shared <uid> <OldName>
+dsp-cli create-shared <uid> <NewName>
+
+# Update consumers' import-why if the meaning changed
+dsp-cli update-import-why <consumer-uid> <uid> --why "<updated reason>"
+```
+
+## Checklist
+
+- [ ] All new public functions/classes/interfaces are registered with `create-shared`
+- [ ] Removed exports are cleaned up with `remove-shared`
+- [ ] Consumers of changed exports are updated or notified
+- [ ] `get-recipients` returns expected results after changes

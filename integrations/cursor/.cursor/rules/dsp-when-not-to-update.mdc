@@ -1,0 +1,29 @@
+---
+description: Skip DSP updates for internal-only changes
+globs:
+alwaysApply: true
+---
+
+# DSP — When NOT to Update
+
+Not every code change requires a DSP update. Skip DSP operations for internal-only changes that don't affect the project's structural graph.
+
+## Do NOT Update DSP For
+
+- **Formatting changes** — whitespace, indentation, line breaks, prettier/eslint fixes
+- **Comment edits** — adding, removing, or rewriting comments and documentation strings
+- **Private function body changes** — refactoring internals without changing the function's signature or purpose
+- **Dependency version bumps** — updating package.json, requirements.txt, Cargo.toml versions
+- **Config file tweaks** — .env, .gitignore, tsconfig.json, eslint config, CI pipeline YAML
+- **Test internals** — changing test assertions, adding test cases (unless the test architecture itself changes)
+- **Logging/debugging** — adding or removing console.log, print statements, debug breakpoints
+- **Performance optimizations** — internal algorithm changes that don't alter the module's interface or purpose
+
+## DO Update DSP When
+
+- Creating or deleting source files
+- Renaming or moving files
+- Adding or removing module dependencies (imports)
+- Changing a module's public API (exports, shared interfaces)
+- Changing a module's core purpose or responsibility
+- Splitting one module into multiple or merging modules
