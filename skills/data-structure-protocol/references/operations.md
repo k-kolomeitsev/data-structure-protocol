@@ -62,6 +62,27 @@ dsp-cli add-import <importer_uid> <imported_uid> <why> [--exporter UID]
 
 Record an import relationship.
 
+**Pre-condition — Verify before calling:**
+
+Before registering ANY import, you MUST confirm the imported symbol is **actually used** in the importer's file body (outside the `import` statement):
+
+1. Search for the imported symbol in the file body (excluding the import line itself).
+2. **If NOT found** → dead import. Do NOT call `addImport`. Remove the import from source code instead.
+3. **If found** → proceed, but write `why` based on the **actual usage site**, not by restating the imported entity's purpose/description.
+
+The `why` parameter answers: **"what would break in THIS file if this import were removed?"** It must describe the concrete role the import plays in the importing file.
+
+```
+BAD:  "Animation library"                          ← restates entity description
+GOOD: "motion.div wraps each stat card for staggered fade-in on viewport entry"
+
+BAD:  "Quick action suggestion buttons"            ← restates entity description
+GOOD: "Rendered as horizontal pill row below chat messages for one-tap AI queries"
+
+BAD:  "React namespace for component typing"       ← generic, says nothing specific
+GOOD: "useState manages sidebar collapsed state, useEffect syncs with localStorage"
+```
+
 Actions:
 1. Append `imported_uid [via=exporter]` to importer's `imports`
 2. Write reverse link:
@@ -256,3 +277,14 @@ import { calc } from './utils';
 ```
 
 **Rule:** two calls when importing BOTH the module as a whole AND a specific symbol from it. One call otherwise.
+
+### Dead Import Detection
+
+An `import` statement in source code is NOT proof of a dependency. Code may contain unused imports (leftover from refactoring, copy-paste, or auto-imports).
+
+**Before every `addImport` call:**
+1. Find the imported symbol name (e.g., `Foo` from `import { Foo } from '...'`).
+2. Search for `Foo` in the file body **excluding the import line**.
+3. If zero matches → **dead import**. Do not register. Remove from source code.
+
+This applies equally during bootstrap and during incremental updates. A phantom edge in the dependency graph is worse than a missing edge — it creates false coupling and misleads impact analysis.

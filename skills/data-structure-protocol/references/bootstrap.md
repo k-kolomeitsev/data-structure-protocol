@@ -26,11 +26,33 @@ Bootstrap is a DFS (depth-first search) traversal of dependencies from root entr
 createObject(rootPath, rootPurpose)          → rootUid (first in TOC)
 createFunction(path#symbol, purpose, rootUid) → funcUid (for each function)
 createShared(rootUid, [funcUid, ...])         (for exports)
-addImport(rootUid, importedUid, why)          (for each import)
+addImport(rootUid, importedUid, why)          (for each VERIFIED import)
 createObject(pkgName, purpose, kind=external) (for external deps, add to TOC but don't descend)
 ```
 
 **Root's description must include a brief project overview.**
+
+#### Import Verification (REQUIRED for every import)
+
+Before calling `addImport`, you MUST verify that the imported symbol is **actually used** in the file body (outside the `import` statement itself):
+
+1. For each imported symbol (`import { Foo, Bar } from '...'`), search for `Foo` and `Bar` in the rest of the file (excluding the import line).
+2. **If a symbol is NOT found in the file body** → it is a dead import. Do NOT register it in DSP. Remove it from the source code.
+3. **If a symbol IS found** → write the `why` based on the **actual usage site in this specific file**, not by restating the imported entity's description/purpose.
+
+The `why` must answer: **"what would break in THIS file if this import were removed?"**
+
+```
+BAD why:  "Quick action suggestion buttons"       ← copied from entity description
+GOOD why: "Rendered below chat input as quick-reply options when AI responds"
+                                                   ← describes actual usage in this file
+
+BAD why:  "Animation library for React"            ← generic package description
+GOOD why: "motion.div wraps stat cards for fade-in entry on scroll"
+                                                   ← describes what specifically is animated
+```
+
+This step prevents phantom dependencies in the graph — imports that exist in code but serve no purpose.
 
 ### Step 3: Take First Non-External Import
 
@@ -68,3 +90,4 @@ root (document)
 - After traversal, the TOC file contains a complete ordered list of all project entities.
 - One file may contain multiple entities (Object + shared Functions) — all get separate UIDs.
 - Place `@dsp <uid>` comment markers in source code before each entity declaration.
+- **Never register an import without verifying the symbol is used in the file body.** See [Import Verification](#import-verification-required-for-every-import) in Step 2.
