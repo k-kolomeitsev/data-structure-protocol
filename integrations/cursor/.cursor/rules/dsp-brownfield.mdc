@@ -6,58 +6,65 @@ alwaysApply: false
 
 # DSP Brownfield Workflow
 
-Use this workflow when integrating DSP into an existing codebase.
+Use this workflow when integrating DSP into an existing codebase. Bootstrap runs as **three flat waves after root discovery** — no recursion, no graph traversal.
 
-## Phase 1: Bootstrap
-
-Initialize DSP and register the top-level module structure:
+## Phase 0: Initialize and Discover Roots
 
 ```bash
 dsp-cli init
 ```
 
-Start with major directories/modules — don't try to register every file at once:
+Identify entrypoints and the directory zone (scope) each one covers:
 
 ```bash
-dsp-cli create-object --source src/auth/ --purpose "Authentication and authorization module"
-dsp-cli create-object --source src/api/ --purpose "REST API routes and controllers"
-dsp-cli create-object --source src/database/ --purpose "Database connection, migrations, repositories"
+dsp-cli create-object backend/src/main.ts "Backend entry — <brief project overview>" --new-root --scope backend
+dsp-cli create-object frontend/src/main.tsx "Frontend entry" --new-root --scope frontend
+# single-root project: one root with --scope .
 ```
 
-## Phase 2: Navigate
+Scopes make TOC assignment automatic: every entity created later lands in all TOCs whose root scope covers its path — no `--toc` needed in the waves below.
 
-Use DSP to explore what's registered:
+## Wave 1: Index All Files
+
+Every project file becomes an entity (skip vendored code, build output, lock files):
 
 ```bash
-dsp-cli read-toc           # see all root entities
-dsp-cli search "auth"      # find by keyword
-dsp-cli get-entity <uid>   # inspect specific entity
+dsp-cli create-object src/auth/jwt.service.ts "JWT token generation and validation"
+dsp-cli create-function "src/auth/jwt.service.ts#signToken" "Signs access tokens" --owner <jwt-uid>
 ```
 
-As you encounter sub-modules and functions, register them incrementally:
+Place `@dsp <uid>` markers before inner-entity declarations. Resume-safe: run `dsp-cli find-by-source <path>` first and skip files that already have entities. If the code already carries `@dsp` markers from a previous graph, keep identities with `--uid <old-uid>`.
+
+## Wave 2: Index All Exports
+
+For each file, register its public API (all UIDs already exist after Wave 1):
 
 ```bash
-dsp-cli create-function --source src/auth/jwt.service.ts --purpose "JWT token generation and validation" --owner <auth-uid>
+dsp-cli create-shared <module-uid> <member-uid> [<member-uid> ...]
 ```
 
-## Phase 3: Wire Dependencies
+## Wave 3: Index All Imports
 
-As you discover cross-module dependencies during development:
+Verify each import is actually used in the file body (dead imports → remove from code, never register), then:
 
 ```bash
-dsp-cli add-import <consumer-uid> <provider-uid> --why "uses authentication middleware"
-dsp-cli create-shared <provider-uid> AuthMiddleware
+dsp-cli add-import <consumer-uid> <provider-uid> "uses authentication middleware"
 ```
 
-## Phase 4: Maintain
+External packages — register once, then attach to other roots' TOCs as you encounter them:
 
-During ongoing development:
+```bash
+dsp-cli create-object express "HTTP framework" --kind external --toc <root-uid>
+dsp-cli add-to-toc <express-uid> --toc <other-root-uid>
+```
 
-1. **New features** → register entities, imports, shared exports
-2. **Refactors** → `get-parents` for impact analysis, then `move-entity` / update imports
-3. **Deletions** → `remove-entity`, `remove-import`, `remove-shared`
-4. **Periodic health** → `get-orphans`, `detect-cycles`, `get-stats`
+## Phase 4: Verify and Maintain
+
+1. **Health check** → `get-stats`, `get-orphans` (scripts/configs legitimately show up), `detect-cycles`
+2. **New features** → register entities, imports, shared exports as you code
+3. **Refactors** → `get-parents` for impact analysis, then `move-entity` / update imports; `move-to-toc` when a module migrates between subprojects
+4. **Deletions** → `remove-entity`, `remove-import`, `remove-shared`
 
 ## Key Principle
 
-You don't need 100% coverage on day one. Register entities as you work with them. DSP grows organically — the most-touched modules get registered first, which is exactly where structural memory provides the most value.
+Prefer the full three-wave bootstrap — flat passes over the file list are fast, parallelizable, and resumable. If you must go incremental instead, register entities as you touch them: the most-touched modules get covered first, which is where structural memory pays off most.

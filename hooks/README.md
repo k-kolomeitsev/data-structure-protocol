@@ -36,8 +36,8 @@ All configuration is done via environment variables:
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
 | `DSP_PRECOMMIT_MODE` | `warn` \| `block` | `warn` | `warn` — print issues but allow commit; `block` — reject commit if DSP errors exist |
-| `DSP_CLI` | path | *(auto-detected)* | Explicit path to `dsp-cli.py`. Auto-detection searches `.cursor/`, `.claude/`, `.codex/`, and `skills/` directories |
-| `DSP_SKIP_PATTERNS` | glob list | `*.md,*.txt,*.json,*.yml,*.yaml,*.lock,*.log` | Comma-separated glob patterns for files to skip during checks |
+| `DSP_CLI` | command / path | *(auto-detected)* | Bash hooks: full command, e.g. `python /path/to/dsp-cli.py`. PowerShell scripts: path to `dsp-cli.py` (also accepted via the `-DspCli` parameter). When set, it takes precedence over auto-detection; otherwise the hooks search `.cursor/`, `.claude/`, `.codex/`, and `skills/` directories |
+| `DSP_SKIP_PATTERNS` | glob list | `*.md,*.txt,*.json,*.yml,*.yaml,*.lock,*.log` | Comma-separated glob patterns for files to skip during checks (bash hooks) |
 
 ### Examples
 

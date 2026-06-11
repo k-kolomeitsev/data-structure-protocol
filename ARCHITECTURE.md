@@ -15,20 +15,23 @@
 > 4. **When removing an import / export / file** — call `remove-import`, `remove-shared`, `remove-entity` respectively. Cascading cleanup is performed automatically.
 > 5. **When renaming/moving a file** — call `move-entity`. The UID does not change.
 > 6. **Don’t touch DSP** if only internal implementation changed, without changing purpose and dependencies.
-> 7. **Bootstrap** — if `.dsp/` is empty, traverse the project from the root entrypoint downwards (DFS over imports), documenting every file.
+> 7. **TOC membership** — new entities land in every TOC whose root scope covers their path (or pass `--toc` explicitly, repeatable). Re-shape membership later with `add-to-toc` / `move-to-toc`.
+> 8. **Bootstrap** — if `.dsp/` is empty: discover roots (`--new-root --scope`), then three waves — index all files, then all exports, then all imports.
 >
 > **Key commands:**
 > ```
 > dsp-cli init
-> dsp-cli create-object <source> <purpose> [--kind external] [--toc ROOT_UID]
-> dsp-cli create-function <source> <purpose> [--owner UID] [--toc ROOT_UID]
+> dsp-cli create-object <source> <purpose> [--kind external] [--uid UID] [--toc TOC ...] [--new-root [--scope DIR]]
+> dsp-cli create-function <source> <purpose> [--owner UID] [--uid UID] [--toc TOC ...]
 > dsp-cli create-shared <exporter_uid> <shared_uid> [<shared_uid> ...]
 > dsp-cli add-import <importer_uid> <imported_uid> <why> [--exporter UID]
+> dsp-cli add-to-toc <uid> [<uid> ...] --toc TOC [--toc TOC ...]
+> dsp-cli move-to-toc <uid> [<uid> ...] --from TOC --to TOC
 > dsp-cli remove-import <importer_uid> <imported_uid> [--exporter UID]
 > dsp-cli remove-shared <exporter_uid> <shared_uid>
 > dsp-cli remove-entity <uid>
 > dsp-cli move-entity <uid> <new_source>
-> dsp-cli update-description <uid> [--source S] [--purpose P] [--kind K]
+> dsp-cli update-description <uid> [--source S] [--purpose P] [--kind K] [--scope DIR]
 > dsp-cli get-entity <uid>
 > dsp-cli get-children <uid> [--depth N]
 > dsp-cli get-parents <uid> [--depth N]
@@ -37,6 +40,8 @@
 > dsp-cli read-toc [--toc ROOT_UID]
 > dsp-cli get-stats
 > ```
+>
+> `TOC` above is a root UID or the literal `default` (the plain `.dsp/TOC` file).
 
 ---
 
@@ -68,7 +73,7 @@
   - to the **specific shared entity** (what exactly we use).
 - **Import completeness (coverage).** **Any file/artifact that is imported/connected somewhere must be represented in `.dsp` as an Object with UID and `source:`.** This includes not only code, but also assets/resources: images (`.png/.svg/.webp`), styles (`.css/.scss`), data (`.json`), wasm, sql, templates, etc.
 - **`why` is always written next to the imported entity.** The feedback is stored in `exports` of the imported entity (see §4.3 and `addImport`).
-- **Start from roots.** Each root is a separate entrypoint with its own TOC file. By default, roots are auto-detected via the LLM; if needed, they are specified manually. Imports are traversed depth-first from each root.
+- **Start from roots.** Each root is a separate entrypoint with its own TOC file. By default, roots are auto-detected via the LLM; if needed, they are specified manually. A root may declare a `scope` — the directory subtree it covers — and every new entity is then assigned to the TOCs whose root scope covers its path (or to explicitly listed TOCs).
 - **External dependencies are recorded only.** If an entity imports an external library/tool (npm packages, stdlib, SDK, etc.), DSP records the _fact of the import_ and a brief purpose, but **does not dive inside** the dependency (in Node.js do not go into `node_modules`; in Python — into `site-packages`; in Go — into `vendor`/module cache; etc.). At the same time, external dependencies still have an **`exports index`** — you can see who imports them and why, so the relationship graph remains complete.
 
 ### 3) Terms
@@ -135,6 +140,8 @@ After that (optional), freeform text/markdown sections may follow (no rigid sche
 
 **Rule for the root file (root entrypoint):** its `description` must include a **brief project overview** (what the system is, its main pipeline/workflow, and what is public API/boundaries) — as short as possible so it becomes the first “project context” for the LLM.
 
+**Root-only field `scope:`** — the repo-relative directory subtree this root covers (`.` = whole repo). Set via `create-object ... --new-root --scope <dir>` or later via `update-description <rootUid> --scope <dir>`. Scope drives automatic TOC assignment (§5.1): an entity created without an explicit `--toc` is appended to every TOC whose root scope covers the entity's source path.
+
 ##### 4.2.2. `imports` format
 
 Minimal format (one line — one dependency):
@@ -197,14 +204,15 @@ For each root entrypoint, **its own TOC file** is created under `.dsp/`. One roo
 **Rules:**
 
 - **TOC[0] is always the root** of this entrypoint. This is how the LLM gets a starting point.
-- Next — all entities reachable from that root, in documentation order (traversal order during bootstrap).
+- Next — all entities belonging to that root's zone (covered by its `scope`, reachable from it, or assigned explicitly), in documentation order.
 - Each UID appears in a given TOC **exactly once**.
-- The same entity **may** be in multiple TOCs (if reachable from multiple roots).
-- When documenting new entities — append them to the end of the corresponding TOC.
+- The same entity **may** be in multiple TOCs (overlapping scopes, shared/external dependencies used by several roots).
+- When documenting new entities — they are appended to the end of the corresponding TOC(s): automatically by scope matching, or explicitly via `--toc` / `add-to-toc`.
+- Membership is reshaped with `add-to-toc` (add to more TOCs) and `move-to-toc` (transfer between TOCs); a root cannot be moved out of its own TOC.
 
 **Purpose:**
 
-- A complete overview of all entities reachable from a given root.
+- A complete overview of all entities in a given root's zone.
 - Lets the LLM start navigation from the right entrypoint and dive into its structure.
 - In multi-root projects (monorepo, multiple applications), each TOC is an independent map of its subtree.
 
@@ -218,39 +226,58 @@ Initialize the `.dsp/` directory at the project root. Required first step before
 
 CLI: `dsp-cli init`
 
-#### 5.1. `createObject(sourceRef, purpose, kind?) -> objUid`
+#### 5.1. `createObject(sourceRef, purpose, kind?, tocs?, newRoot?, uid?, scope?) -> objUid`
 
 Parameters:
 
 - `sourceRef` — path to source (+ symbol if applicable),
 - `purpose` — purpose,
-- `kind` — `object` (default) or `external` (for external dependencies).
+- `kind` — `object` (default) or `external` (for external dependencies),
+- `tocs` — list of TOC targets (root UID or `default`, repeatable): append the new entity to exactly these TOCs. Every explicitly named TOC must already exist,
+- `newRoot` — make the object a **new root**: create `TOC-<objUid>` with `objUid` as its first line (mutually exclusive with `tocs`). This is the only way to start a new root TOC — the root's UID is generated by this very call, so it cannot be passed via `tocs`,
+- `uid` — use this UID instead of generating one (re-indexing a project whose code already carries `@dsp` markers). Fails on a collision or an `obj-`/`func-` prefix mismatch,
+- `scope` — only with `newRoot`: the directory subtree this root covers (`.` = whole repo); written into `description` as `scope:`.
+
+**TOC resolution** (when neither `tocs` nor `newRoot` is given):
+
+1. the entity is appended to **every** TOC whose root `scope` covers `sourceRef` (the path part, without `#symbol`);
+2. no scope matches → the default `.dsp/TOC`, if it exists;
+3. no TOC files exist at all (fresh project) → the default `.dsp/TOC` is created;
+4. otherwise the operation **fails** with a hint to pass `tocs` explicitly — it never invents a new TOC silently.
 
 Actions:
 
-- generate/resolve `objUid` (stably),
+- generate `objUid`, or validate the supplied `uid` (format, prefix, uniqueness),
+- resolve target TOCs (see above) — **before any write**, so a failure leaves no trace,
 - create `.dsp/<objUid>/`,
-- write `.dsp/<objUid>/description` (source, kind, purpose),
+- write `.dsp/<objUid>/description` (source, kind, purpose, and `scope` for a new root),
 - create `.dsp/<objUid>/imports` if missing (empty),
 - if needed — `.dsp/<objUid>/shared` (empty),
-- **append `objUid` to `.dsp/TOC`**.
+- **append `objUid` to every target TOC**: the freshly created `.dsp/TOC-<objUid>` when `newRoot` is set, otherwise the resolved/explicit list.
 
-#### 5.2. `createFunction(sourceRef, purpose, ownerUid?) -> funcUid`
+CLI prints the created UID to stdout; the list of TOCs the entity landed in goes to stderr (`toc: ...`).
+
+#### 5.2. `createFunction(sourceRef, purpose, ownerUid?, tocs?, uid?) -> funcUid`
+
+Parameters: `tocs` and `uid` behave exactly as in `createObject` (§5.1), including automatic TOC resolution by root scopes — the path part of `sourceRef` (without `#symbol`) is matched.
 
 Actions:
 
-- generate/resolve `funcUid` (stably),
+- generate `funcUid`, or validate the supplied `uid` (format, `func-` prefix, uniqueness),
+- validate `ownerUid` and resolve target TOCs — **before any write**,
 - create `.dsp/<funcUid>/`,
 - write `.dsp/<funcUid>/description`,
 - create `.dsp/<funcUid>/imports` (empty),
 - if `ownerUid` is provided:
   - append `funcUid` to the owner object’s `imports` (so the object “sees” its methods),
   - create a reverse record `.dsp/<funcUid>/exports/<ownerUid>` (so `getParents` can find the owner without a full scan),
-- **append `funcUid` to `.dsp/TOC`**.
+- **append `funcUid` to every target TOC**.
 
 > Function ownership is determined through the owner’s `imports`. Reverse lookup — through `getParents(funcUid)`. A standalone function (without an owner) is simply added to a module’s `shared` if it is exported.
 
 #### 5.3. `createShared(exporterUid, sharedUids[])`
+
+Every `sharedUid` must be an **existing entity** — create it first via `createObject`/`createFunction`. Export *names* are rejected: shared entries are UIDs, otherwise the graph accumulates references to nonexistent nodes.
 
 Actions:
 
@@ -259,6 +286,8 @@ Actions:
 - for each `sharedUid`, ensure `.dsp/<exporterUid>/exports/<sharedUid>/description` exists — if the file is created for the first time, `description` is auto-filled from the `purpose` of the shared entity (if it already exists in `.dsp`).
 
 #### 5.4. `addImport(importerUid, importedUid, exporterUid?, why)`
+
+All referenced UIDs (`importerUid`, `importedUid`, and `exporterUid` if given) must exist in `.dsp` — this keeps the graph closed (§8.5). For an external dependency, create its Object (`kind: external`) first.
 
 Actions:
 
@@ -302,12 +331,17 @@ import express from 'express';
 
 #### 5.5. `updateDescription(uid, fields)`
 
-Update the description of an existing entity. Typical scenarios: the purpose of a module changed, the file path changed (rename/move), or the description was refined after refactoring.
+Update the description of an existing entity. Typical scenarios: the purpose of a module changed, the file path changed (rename/move), the description was refined after refactoring, or a root's `scope` is being set/changed.
+
+Validation:
+
+- `kind` must be one of `object` / `function` / `external`, and must stay consistent with the UID prefix: a `func-` entity is always `function`; an `obj-` entity can be `object` or `external`, never `function`,
+- `scope` is accepted **only for root entities** (TOC[0] of some TOC file) and is normalized (backslashes → `/`, trailing slashes stripped, `.` = whole repo).
 
 Actions:
 
 - read `.dsp/<uid>/description`,
-- update specified fields (`source:`, `purpose:`, `kind:`, freeform sections),
+- update specified fields (`source:`, `purpose:`, `kind:`, `scope:`, freeform sections); untouched fields (including freeform `notes:` etc.) are preserved,
 - write back `.dsp/<uid>/description`.
 
 #### 5.6. `updateImportWhy(importerUid, importedUid, exporterUid?, newWhy)`
@@ -339,12 +373,15 @@ Actions:
 
 Remove an import relationship. Typical scenario: an `import` was removed from code.
 
+Matching is **exact on the exporter**: without `exporterUid` only a plain line (no `via=`) is removed; with `exporterUid` only the line `importedUid via=<exporterUid>`. This mirrors `addImport` — the two link kinds are distinct edges with reverse records in different places, and removing one by the other's call would desync `imports` from `exports/`.
+
 Actions:
 
-- remove `importedUid` from `.dsp/<importerUid>/imports`,
+- remove the matching line from `.dsp/<importerUid>/imports`,
 - delete the feedback file from `exports`:
-  - if `exporterUid` is provided: delete `.dsp/<exporterUid>/exports/<importedUid>/<importerUid>`,
-  - otherwise: delete `.dsp/<importedUid>/exports/<importerUid>`.
+  - if `exporterUid` is provided: delete `.dsp/<exporterUid>/exports/<importedUid>/<importerUid>` (and the now-empty `<importedUid>/` directory, if nothing else remains in it),
+  - otherwise: delete `.dsp/<importedUid>/exports/<importerUid>`,
+- if **neither** the import line **nor** the feedback file existed — fail with a hint to pass (or drop) `--exporter`.
 
 #### 5.9. `removeShared(exporterUid, sharedUid)`
 
@@ -363,9 +400,13 @@ Remove an entity from DSP completely. Typical scenario: a file/module was delete
 Actions:
 
 1. **Full imports scan**: for each entity in `.dsp` — remove from `imports` all lines where `uid` appears as `imported` or as a `via=` target. This covers direct imports, shared-imports via `uid`, owner links — everything in one pass.
-2. **Clean outgoing links**: read `.dsp/<uid>/imports` — for each imported entity, delete the feedback file from its `exports/`.
-3. **Clean shared references in exporters**: for each entity — if `uid` appears in someone’s `shared`, remove `uid` from `.dsp/<exporterUid>/shared` and delete `.dsp/<exporterUid>/exports/<uid>/`.
-4. Remove `uid` from **all** TOC files.
+2. **Full reverse-index sweep**: for each other entity, remove every trace of `uid` from its `exports/`:
+   - the file `exports/<uid>` (`uid` imported that entity as a whole),
+   - the directory `exports/<uid>/` (`uid` was exported via that entity — swept even if `uid` is missing from its `shared`, so nothing dangles when shared registration was skipped),
+   - the file `exports/<sharedUid>/<uid>` for every shared subdirectory (`uid` imported that shared entity); a subdirectory left completely empty is removed.
+   A sweep (rather than a targeted cleanup driven by `uid`'s own `imports`/`shared`) guarantees zero dangling references even on a partially desynced graph.
+3. **Clean shared lists**: remove `uid` from every entity’s `shared` file where it appears.
+4. Remove `uid` from **all** TOC files. If `uid` was a root with its own `.dsp/TOC-<uid>` file, delete that file entirely.
 5. Delete the `.dsp/<uid>/` directory entirely.
 
 ---
@@ -509,59 +550,88 @@ Returns:
 - number of cycles (if any),
 - number of orphans.
 
+---
+
+#### TOC membership operations
+
+#### 5.23. `addToToc(uids[], tocs[])`
+
+Add **existing** entities to one or more TOCs, single or batch. Typical scenarios: an external dependency registered under root A turns out to be used by root B as well; an entity should appear in an additional root's map.
+
+CLI: `dsp-cli add-to-toc <uid> [<uid> ...] --toc <TOC> [--toc <TOC> ...]` where `<TOC>` is a root UID or `default`.
+
+Actions:
+
+- validate that every `uid` exists and every target TOC file exists,
+- append each `uid` to each target TOC (idempotent — a UID already present in a TOC is reported and left in place, never duplicated).
+
+#### 5.24. `moveToToc(uids[], fromToc, toToc)`
+
+Transfer entities from one TOC to another, single or batch. Typical scenarios: a module migrated between subprojects of a monorepo; an entity was indexed into the wrong root's map.
+
+CLI: `dsp-cli move-to-toc <uid> [<uid> ...] --from <TOC> --to <TOC>`.
+
+Validation (the whole batch is checked **before** anything is written — all-or-nothing):
+
+- `fromToc` ≠ `toToc`, both TOC files exist, every `uid` exists,
+- every `uid` is present in `fromToc`,
+- no `uid` is the **root** of `fromToc` (TOC[0] cannot be moved out of its own TOC — the root defines the TOC).
+
+Actions:
+
+- remove each `uid` from `fromToc`,
+- append each `uid` to the end of `toToc`; if it is already there, only the removal happens (reported as “already in target”).
+
+> Only TOC membership changes. The entity itself, its imports/shared/exports edges, and its membership in other TOCs are untouched.
+
 ### 6) Bootstrap (initial mapping)
 
-#### Algorithm (depth-first traversal)
+#### Algorithm (three waves after root discovery)
 
-Bootstrap is a simple DFS traversal of dependencies starting from a root file. **For each root entrypoint**, bootstrap is executed separately with its own TOC file.
-
-**Step 1. Identify root entrypoint(s):**
-
-- by default — auto-detect via the LLM (package.json `main`, framework entrypoint, etc.),
-- or specify manually,
-- if there are multiple roots — run bootstrap for each, creating a separate TOC (`TOC-<rootUid>`).
-
-**Step 2. Fully document the root file:**
-
-- `createObject` for the module (UID is written to TOC **first**),
-- extract functions → `createFunction` for each (with ownerUid pointing to this Object),
-- extract `shared` (exports/public API) → `createShared`,
-- extract all `imports` → `addImport`,
-- external dependencies from imports → `createObject(..., kind: external)` (append to TOC, but do not descend).
-
-**Step 3. Take the first import from the current file that is NOT an external dependency** (not a library, not node_modules, not stdlib):
-
-- document it fully (same as Step 2),
-- append its UID to TOC.
-
-**Step 4. Recursive descent:**
-
-- from the just-documented file, take the first non-library import,
-- if it exists — document it and repeat Step 4,
-- if **none exist** — **go up one level** and take the next unprocessed non-library import.
-
-**Step 5.** Repeat until all reachable non-library files are documented.
-
-**Visually:**
+Bootstrap is **not** a graph traversal. It is three flat, linear passes over the project's file list, executed after the roots (TOCs) are in place. Each wave is independent per file, so it can be batched, parallelized, checkpointed, and resumed.
 
 ```
-root (document)
- ├─ import_A (non-library → document)
- │   ├─ import_A1 (non-library → document)
- │   │   └─ ... (descend deeper)
- │   ├─ import_A2 (external → record kind: external, DO NOT descend)
- │   └─ import_A3 (non-library → document)
- │       └─ ... no non-library imports → backtrack
- ├─ import_B (non-library → document)
- │   └─ ...
- └─ import_C (external → record kind: external, DO NOT descend)
+Phase 0: discover roots  →  createObject(..., newRoot, scope)   — one TOC per root
+Wave 1:  ALL files       →  createObject / createFunction        — every file becomes an entity
+Wave 2:  ALL exports     →  createShared                         — public API of every file
+Wave 3:  ALL imports     →  addImport (+ externals)              — every dependency edge
 ```
+
+**Phase 0. Discover roots (TOCs):**
+
+- identify entrypoints — by default auto-detect via the LLM (package.json `main`, framework entrypoint, `main.py`, etc.), or specify manually,
+- decide each root's **scope** — the directory subtree it covers (`.` for the whole repo, `backend` / `frontend` for a monorepo),
+- `createObject(rootPath, purpose + project overview, newRoot, scope)` per root — each gets its own `TOC-<rootUid>`,
+- thanks to scopes, Waves 1–3 never pass TOC arguments: every created entity is auto-assigned to all TOCs whose root scope covers its path (§5.1).
+
+**Wave 1. Index all files:**
+
+- list **every** project file (respect `.gitignore`; exclude vendored code, build output, lock files, `.dsp/`),
+- per file: `createObject(path, purpose)`; for each significant inner entity (exported function/class) — `createFunction(path#symbol, purpose, ownerUid)`; place `@dsp <uid>` markers in source,
+- order does not matter; resume via `findBySource` (already indexed → skip).
+
+**Wave 2. Index all exports:**
+
+- per file: determine its public API → `createShared(objUid, memberUids)`,
+- every member UID already exists after Wave 1 — this wave is pure wiring.
+
+**Wave 3. Index all imports:**
+
+- per file, per import: **verify the import is alive** (the symbol is used in the file body — dead imports are removed from code, not registered), then `addImport(thisUid, importedUid, why, exporterUid?)`,
+- local targets are resolved via `findBySource` — they all exist after Wave 1,
+- external dependencies: first occurrence → `createObject(pkg, purpose, kind: external)` with the current root's TOC; subsequent roots using the same external → `addToToc(extUid, rootToc)`; **never descend inside**.
+
+**Verification:** `getStats`, `getOrphans` (unreachable files are expected for scripts/configs — review the rest), `detectCycles`, spot-check `readTOC` per root.
+
+**Re-indexing:** if `.dsp/` is rebuilt while the code still carries `@dsp` markers, collect them via grep and pass each old UID through the `uid` parameter of `createObject`/`createFunction` — the graph is rebuilt with stable UIDs and markers stay valid.
 
 **Key rules:**
 
-- Traversal uses a `visited` set by UID/sourceRef — **no infinite recursion**.
+- Phase 0 strictly first — roots and scopes must exist before Wave 1 so files have TOCs to land in.
 - External dependencies are recorded as Objects with `kind: external`, but their internal structure **is not analyzed**.
-- After traversal completes, `.dsp/TOC` contains a complete ordered list of all project entities.
+- After Wave 3, each TOC contains the complete ordered list of its root's zone — including files not (yet) reachable through imports; `getOrphans` reveals them.
+
+**Why flat waves:** every entity exists before the first `addImport` (no missing-UID failures, no creating targets mid-pass); linear passes are batchable, parallelizable, and resumable; coverage is complete — every project file is indexed, including those not reachable through imports.
 
 ### 7) UID: stability and “versioning”
 

@@ -20,7 +20,7 @@ irm https://raw.githubusercontent.com/k-kolomeitsev/data-structure-protocol/main
 
 ### Via Codex skill-installer
 
-If you have the Codex skill-installer available:
+If you have the Codex skill-installer available, type inside a Codex CLI session (not in your shell):
 
 ```
 $skill-installer install https://github.com/k-kolomeitsev/data-structure-protocol/tree/main/skills/data-structure-protocol

@@ -6,24 +6,24 @@ alwaysApply: false
 
 # DSP — Register New Files
 
-When creating a new source file in this project, register it in DSP.
+When creating a new source file in this project, register it in DSP. Arguments are positional — quote multi-word values.
 
 ## For a New Module or Class
 
 ```bash
-dsp-cli create-object --source <file-path> --purpose "<what this module does>"
+dsp-cli create-object <file-path> "<what this module does>"
 ```
 
-## For a New Standalone Function
+## For a New Function
 
 ```bash
-dsp-cli create-function --source <file-path> --purpose "<what this function does>" --owner <parent-uid>
+dsp-cli create-function "<file-path>#<symbol>" "<what this function does>" --owner <parent-uid>
 ```
 
 Find the parent UID:
 
 ```bash
-dsp-cli find-by-source <parent-directory-or-file>
+dsp-cli find-by-source <parent-file>
 ```
 
 ## After Registration
@@ -31,13 +31,13 @@ dsp-cli find-by-source <parent-directory-or-file>
 1. Add imports for any dependencies this file uses:
 
 ```bash
-dsp-cli add-import <new-uid> <dependency-uid> --why "<reason>"
+dsp-cli add-import <new-uid> <dependency-uid> "<reason>"
 ```
 
-2. If the file exposes a public API consumed by other modules:
+2. If the file exposes a public API consumed by other modules, share the UID of the exported entity (register it first with `create-function`/`create-object`):
 
 ```bash
-dsp-cli create-shared <new-uid> <export-name>
+dsp-cli create-shared <new-uid> <exported-entity-uid>
 ```
 
 ## When to Skip

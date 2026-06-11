@@ -51,9 +51,11 @@ curl -fsSL https://raw.githubusercontent.com/k-kolomeitsev/data-structure-protoc
 
 **Codex skill-installer:**
 
-```bash
+```
 $skill-installer install https://github.com/k-kolomeitsev/data-structure-protocol/tree/main/skills/data-structure-protocol
 ```
+
+> `$skill-installer` is a Codex skill invocation — type it inside a Codex CLI session, not in your shell.
 
 ---
 
@@ -77,35 +79,46 @@ python skills/data-structure-protocol/scripts/dsp-cli.py --root . init
 
 ## 3. Bootstrap an Existing Project (Brownfield)
 
-For a codebase that already exists, treat bootstrapping as a **depth-first walk** over the import graph:
+For a codebase that already exists, bootstrapping is **three flat waves after root discovery** — linear passes over the file list, not a graph traversal:
 
-1. **Identify root entrypoints** — e.g. `src/main.ts`, `src/app.module.ts`, or your framework’s real roots.
-2. **Create a root entity** for each entry file:
-
-   ```bash
-   python dsp-cli.py --root . create-object "src/main.ts" "Application entrypoint"
-   ```
-
-3. **Walk imports depth-first**: for each file you reach, **create an object** (or function) entity so every important node exists in the graph.
-4. **Record each import** with a short reason:
+1. **Phase 0 — discover roots.** Identify entrypoints (`src/main.ts`, `src/app.module.ts`, your framework’s real roots) and the directory zone each covers. Create each root with its **scope**:
 
    ```bash
-   python dsp-cli.py --root . add-import obj-<from-uid> obj-<to-uid> "HTTP routing and request handling"
+   python dsp-cli.py --root . create-object "src/main.ts" "Application entrypoint" --new-root --scope .
+   # monorepo: --scope backend / --scope frontend per root
    ```
 
-5. **Mark public APIs** where one module exports symbols others rely on:
+   Scopes make TOC assignment automatic: every entity created later lands in all TOCs whose root scope covers its path.
+
+2. **Wave 1 — index all files.** Every project file becomes an entity (skip vendored code, build output, lock files):
+
+   ```bash
+   python dsp-cli.py --root . create-object "src/router.ts" "HTTP route table and dispatch"
+   ```
+
+3. **Wave 2 — index all exports.** Mark public APIs where one module exports symbols others rely on (all UIDs already exist after Wave 1):
 
    ```bash
    python dsp-cli.py --root . create-shared obj-<owner-uid> obj-<shared-uid>
    ```
 
-6. **External dependencies** (npm packages, stdlib, generated vendor code): model them as **`kind: external`** and **do not** try to map their full internals:
+4. **Wave 3 — index all imports.** Verify each import is actually used in the file body (dead imports → remove from code, never register), then record the edge with a short reason:
 
    ```bash
-   python dsp-cli.py --root . create-object "node_modules/some-pkg/index.js" "HTTP client library" --kind external
+   python dsp-cli.py --root . add-import obj-<from-uid> obj-<to-uid> "HTTP routing and request handling"
    ```
 
-**Trade-off (honest):** bootstrapping a large repo is **upfront work**. The payoff is **lower token usage** (agents find structure without re-reading everything), **faster discovery** of relevant files, and **safer refactors** because dependency direction and public surface are explicit.
+5. **External dependencies** (npm packages, stdlib, generated vendor code): model them as **`kind: external`** and **do not** try to map their full internals:
+
+   ```bash
+   python dsp-cli.py --root . create-object "some-pkg" "HTTP client library" --kind external --toc obj-<root-uid>
+   ```
+
+6. **Verify**: `get-stats`, `get-orphans`, `detect-cycles`.
+
+**Re-indexing:** if the code already carries `@dsp <uid>` markers from a previous graph, pass `--uid <old-uid>` to `create-object`/`create-function` — entities keep their identity across the rebuild.
+
+**Trade-off (honest):** bootstrapping a large repo is **upfront work**. The payoff is **lower token usage** (agents find structure without re-reading everything), **faster discovery** of relevant files, and **safer refactors** because dependency direction and public surface are explicit. The wave model keeps the work resumable — each wave is a checklist you can stop and continue.
 
 **Greenfield projects:** you do not need a big-bang bootstrap. **Register entities as you create files and imports**; the graph stays cheap to maintain.
 

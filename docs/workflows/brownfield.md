@@ -26,6 +26,7 @@ irm https://raw.githubusercontent.com/k-kolomeitsev/data-structure-protocol/main
 ```
 $skill-installer install https://github.com/k-kolomeitsev/data-structure-protocol/tree/main/skills/data-structure-protocol
 ```
+> `$skill-installer` is a Codex skill invocation — type it inside a Codex CLI session, not in your shell.
 
 This installs the skill (SKILL.md + dsp-cli.py + references) into the appropriate directory for your agent.
 
@@ -38,101 +39,59 @@ dsp-cli init
 
 This creates the `.dsp/` directory in your project root. Add it to version control — DSP is designed to be git-tracked.
 
-## 3. Identify root entrypoints
+## 3. Identify root entrypoints and their scopes
 
-Before bootstrapping, identify the root entrypoints of your project. Common patterns:
+Before bootstrapping, identify the root entrypoints of your project and the directory zone (**scope**) each one covers. Common patterns:
 
-| Project type | Typical roots |
-|---|---|
-| Backend API | `src/main.ts`, `src/app.module.ts`, `cmd/server/main.go` |
-| Frontend SPA | `src/main.tsx`, `src/App.tsx`, `pages/_app.tsx` |
-| Fullstack monorepo | One root per package: `backend/src/main.ts`, `frontend/src/main.tsx` |
-| CLI tool | `src/cli.ts`, `cmd/root.go`, `__main__.py` |
-| Library | `src/index.ts`, `lib/mod.rs`, `__init__.py` |
+| Project type | Typical roots | Typical scopes |
+|---|---|---|
+| Backend API | `src/main.ts`, `src/app.module.ts`, `cmd/server/main.go` | `.` |
+| Frontend SPA | `src/main.tsx`, `src/App.tsx`, `pages/_app.tsx` | `.` |
+| Fullstack monorepo | One root per package: `backend/src/main.ts`, `frontend/src/main.tsx` | `backend`, `frontend` |
+| CLI tool | `src/cli.ts`, `cmd/root.go`, `__main__.py` | `.` |
+| Library | `src/index.ts`, `lib/mod.rs`, `__init__.py` | `.` |
 
-For multi-root projects, each root gets its own TOC file using the `--toc` flag.
+Create each root with `--new-root --scope <dir>` — it gets its own `TOC-<uid>` file, and the scope makes TOC assignment automatic for everything indexed afterwards: each new entity lands in every TOC whose root scope covers its path.
 
-## 4. Bootstrap via DFS traversal
+## 4. Bootstrap in three waves
 
-This is the most important step. The agent traverses the project from root entrypoints downward, registering every entity and its relationships.
+This is the most important step. Bootstrap is **three flat passes over the project's file list** — not a graph traversal. Every wave is a linear checklist: easy to batch, parallelize, checkpoint, and resume.
 
-### Step 4.1: Register the root
+```
+Phase 0: discover roots  →  one TOC per root (--new-root --scope)
+Wave 1:  ALL files       →  create-object / create-function
+Wave 2:  ALL exports     →  create-shared
+Wave 3:  ALL imports     →  add-import (+ externals)
+```
+
+### Step 4.1: Phase 0 — register the roots
 
 ```bash
 dsp-cli create-object "src/app.module.ts" \
-  "Application root module — bootstraps NestJS app, registers all feature modules and global middleware"
+  "Application root module — bootstraps NestJS app, registers all feature modules and global middleware" \
+  --new-root --scope .
 # obj-82e23068
 ```
 
-### Step 4.2: Open the root file, identify its imports
+For a monorepo — one root per package (`--scope backend`, `--scope frontend`, ...). The root's `description` must include a brief project overview.
 
-The agent reads `src/app.module.ts` and identifies all imports. For each import, it registers the target entity and the relationship.
+### Step 4.2: Wave 1 — index all files
+
+List every project file (respect `.gitignore`; skip vendored code, build output, lock files) and register each one. Order doesn't matter; TOC membership is resolved automatically from the scopes:
 
 ```bash
-# Register an imported module
 dsp-cli create-object "src/users/users.module.ts" \
   "Users feature module — user CRUD, authentication, profile management"
 # obj-a1b2c3d4
 
-# Register the import with a reason
-dsp-cli add-import obj-82e23068 obj-a1b2c3d4 \
-  "app module imports users module to enable user management endpoints"
-
-# Register another imported module
 dsp-cli create-object "src/products/products.module.ts" \
   "Products feature module — product catalog, search, and inventory"
 # obj-e5f6a7b8
-
-dsp-cli add-import obj-82e23068 obj-e5f6a7b8 \
-  "app module imports products module to enable catalog endpoints"
 ```
 
-### Step 4.3: Register external dependencies
-
-External libraries are registered as `--kind external`. You don't go inside them, but you track who uses them and why.
+Functions and classes worth their own entity are registered in the same pass, with `@dsp` markers placed in source:
 
 ```bash
-dsp-cli create-object "@nestjs/core" \
-  "NestJS core framework — dependency injection, module system, lifecycle hooks" \
-  --kind external
-# obj-ext-01
-
-dsp-cli add-import obj-82e23068 obj-ext-01 \
-  "app module uses NestJS core for module bootstrapping and DI container"
-```
-
-### Step 4.4: Traverse depth-first
-
-For each registered module, the agent opens its source, identifies its imports, and repeats the process. This is a DFS (depth-first search) traversal:
-
-```
-app.module.ts (root)
-├── users/users.module.ts
-│   ├── users/users.controller.ts
-│   ├── users/users.service.ts
-│   │   ├── users/users.repository.ts
-│   │   │   └── database/database.service.ts (shared)
-│   │   └── auth/auth.service.ts
-│   └── users/dto/create-user.dto.ts
-├── products/products.module.ts
-│   ├── products/products.controller.ts
-│   ├── products/products.service.ts
-│   └── ...
-└── database/database.module.ts (shared across features)
-```
-
-At each node:
-1. **Register the entity** (`create-object` or `create-function`)
-2. **Register its imports** (`add-import` with `why`)
-3. **Register its exports** (`create-shared` for public API)
-4. **Recurse into imports** (DFS)
-
-### Step 4.5: Register shared/exported entities
-
-When a module exports functions or entities used by other modules, register them:
-
-```bash
-# The users service has public methods used by other modules
 dsp-cli create-function "src/users/users.service.ts#findById" \
   "Finds a user by ID — returns full user entity or throws NotFoundException" \
   --owner obj-a1b2c3d4
@@ -142,28 +101,61 @@ dsp-cli create-function "src/users/users.service.ts#validateCredentials" \
   "Validates email/password pair — returns user entity or null" \
   --owner obj-a1b2c3d4
 # func-d3e4f5a6
+```
 
-# Register these as shared exports of the users module
+Interrupted? Resume safely: `dsp-cli find-by-source <path>` — skip files that already have entities.
+
+### Step 4.3: Wave 2 — index all exports
+
+For each file, register its public API. All UIDs already exist after Wave 1, so this wave is pure wiring:
+
+```bash
 dsp-cli create-shared obj-a1b2c3d4 func-c9d0e1f2 func-d3e4f5a6
 ```
 
-### Step 4.6: Wire shared imports with exporters
+### Step 4.4: Wave 3 — index all imports
 
-When module A imports a specific function from module B, the import tracks both the function and the exporter:
+For each file, verify every import is actually used in the file body (dead imports → remove from code, never register), then record the edge. Local targets are resolved with `find-by-source` — they all exist already:
 
 ```bash
-# Auth service imports validateCredentials from users service
+dsp-cli add-import obj-82e23068 obj-a1b2c3d4 \
+  "app module imports users module to enable user management endpoints"
+
+# Import of a specific shared function tracks the exporter too
 dsp-cli add-import obj-AUTH_SVC func-d3e4f5a6 \
   "auth service uses validateCredentials to verify login attempts" \
   --exporter obj-a1b2c3d4
 ```
 
+External libraries are registered as `--kind external` on first encounter. You don't go inside them, but you track who uses them and why:
+
+```bash
+dsp-cli create-object "@nestjs/core" \
+  "NestJS core framework — dependency injection, module system, lifecycle hooks" \
+  --kind external --toc obj-82e23068
+# obj-aaaa1111
+
+dsp-cli add-import obj-82e23068 obj-aaaa1111 \
+  "app module uses NestJS core for module bootstrapping and DI container"
+
+# Another root also uses it? Attach the existing entity to that root's TOC:
+dsp-cli add-to-toc obj-aaaa1111 --toc obj-f5e6a7b8
+```
+
+### Step 4.5: Verify
+
+```bash
+dsp-cli get-stats        # totals: entities, imports, shared, cycles, orphans
+dsp-cli get-orphans      # unreferenced files — expected for scripts/configs; review the rest
+dsp-cli detect-cycles    # circular dependencies
+```
+
 ### Bootstrap tips
 
-- **Don't try to map everything in one session.** Start with the critical path (root → main modules → core services) and expand incrementally.
-- **Focus on modules/files first, functions second.** Register all `create-object` entities for the key files, wire their imports, then add `create-function` for important public APIs.
-- **External dependencies can be batched.** Register commonly used externals (framework, ORM, HTTP client) once and reference them across modules.
-- **The agent should do this, not you.** Give the agent the DSP skill instructions and ask it to "bootstrap DSP for this project starting from `src/main.ts`".
+- **Waves, not traversal.** Don't follow imports recursively — finish Wave 1 for the whole file list first, then exports, then imports. `add-import` never fails on a missing UID this way.
+- **Batch by directory.** Within a wave, files are independent — process them in batches (or in parallel agent sessions) per directory.
+- **Re-indexing a previously mapped project?** If source files still carry `@dsp <uid>` markers, collect them with grep and pass `--uid <old-uid>` at every create step — identities survive the rebuild.
+- **The agent should do this, not you.** Give the agent the DSP skill instructions and ask it to "bootstrap DSP for this project".
 
 ## 5. Daily workflow: navigate → code → update DSP
 
@@ -316,14 +308,14 @@ See the integration packs in `integrations/claude/` and `integrations/cursor/` f
 
 ## 8. Common patterns and tips
 
-### Pattern: Incremental bootstrap
+### Pattern: Incremental bootstrap (fallback)
 
-Don't try to map the entire project at once. Start with:
+The three-wave bootstrap is the preferred path — flat passes are fast and resumable. But if a full pass over a huge repo is not an option right now, scope the waves down instead of abandoning them:
 
-1. **Core modules** — the main entrypoints and critical services
-2. **Active development area** — whatever you're working on right now
-3. **Shared infrastructure** — database, config, logging, auth
-4. **Expand as needed** — when you touch a new area, bootstrap it then
+1. **Pick a zone** — the active development area or a critical subsystem
+2. **Run all three waves inside that zone** — files, exports, imports (imports pointing outside the zone are added when their targets get indexed)
+3. **Expand zone by zone** — when you touch a new area, run the waves over it
+4. **`get-orphans` shows the frontier** — entities nothing references yet often mark unindexed boundaries
 
 ### Pattern: External dependency grouping
 

@@ -8,40 +8,46 @@ alwaysApply: false
 
 When changing a module's public API (exported functions, classes, interfaces), update DSP shared/exports to keep the graph accurate.
 
+Shared entries are **UIDs of existing entities**, not export names. To share a new export, register it first (`create-function`/`create-object`), then pass its UID to `create-shared`.
+
 ## When Adding a New Public Export
 
 ```bash
-# Find the entity
+# Find the exporting module
 dsp-cli find-by-source <file-path>
 
-# Register the new export
-dsp-cli create-shared <uid> <ExportName>
+# Register the exported entity, then share its UID
+dsp-cli create-function "<file-path>#<ExportName>" "<what it does>" --owner <module-uid>
+# → func-1a2b3c4d
+dsp-cli create-shared <module-uid> func-1a2b3c4d
 ```
 
 ## When Removing a Public Export
 
 ```bash
 # Check who consumes it first
-dsp-cli get-recipients <uid>
+dsp-cli get-recipients <export-uid>
 
 # Remove only if no active consumers, or after updating consumers
-dsp-cli remove-shared <uid> <ExportName>
+dsp-cli remove-shared <module-uid> <export-uid>
 ```
 
 ## When Renaming a Public Export
 
-```bash
-# Remove old, add new
-dsp-cli remove-shared <uid> <OldName>
-dsp-cli create-shared <uid> <NewName>
+The UID stays the same — only the source reference changes:
 
-# Update consumers' import-why if the meaning changed
-dsp-cli update-import-why <consumer-uid> <uid> --why "<updated reason>"
+```bash
+dsp-cli move-entity <export-uid> "<file-path>#<NewName>"
+
+# Update consumers' import reason if the meaning changed
+dsp-cli update-import-why <consumer-uid> <export-uid> "<updated reason>" --exporter <module-uid>
 ```
+
+If the export changed its *purpose* (not just the name), retire the old entity and create a new one: `remove-shared` + `remove-entity`, then `create-function` + `create-shared`.
 
 ## Checklist
 
-- [ ] All new public functions/classes/interfaces are registered with `create-shared`
+- [ ] All new public functions/classes/interfaces have entities and are registered with `create-shared`
 - [ ] Removed exports are cleaned up with `remove-shared`
 - [ ] Consumers of changed exports are updated or notified
 - [ ] `get-recipients` returns expected results after changes

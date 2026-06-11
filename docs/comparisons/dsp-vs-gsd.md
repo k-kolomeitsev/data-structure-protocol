@@ -26,7 +26,7 @@ The difference: DSP solves a problem agents genuinely have (no memory). GSD solv
 | **What it solves** | Agent has no memory of project between sessions | Agent doesn't follow structured workflow |
 | **Is the problem still real?** | Yes — no model has built-in project memory | Partially — modern models plan, verify, and ship without external phases |
 | **Memory / Persistence** | Full graph persists across sessions, tools, branches | No persistent project memory |
-| **Brownfield support** | First-class — DFS bootstrap maps existing codebases | `map-codebase` command — one-time scan, not persistent |
+| **Brownfield support** | First-class — 3-wave bootstrap maps existing codebases | `map-codebase` command — one-time scan, not persistent |
 | **Impact analysis** | Built-in — `get-parents`, `get-recipients`, `get-children` | Not available |
 | **Overhead** | Low — memory layer, no ceremony | Medium — lifecycle phases, planning docs, verification steps |
 | **Install** | `curl \| bash` or `irm \| iex` | `npx get-shit-done-cc@latest` |

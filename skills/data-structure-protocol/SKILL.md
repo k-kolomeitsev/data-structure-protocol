@@ -29,20 +29,23 @@ Embed this context when working on a DSP-tracked project:
 > 4. **When removing import / export / file** — call `remove-import`, `remove-shared`, `remove-entity` respectively. Cascade cleanup is automatic.
 > 5. **When renaming/moving a file** — call `move-entity`. UID does not change.
 > 6. **Don't touch DSP** if only internal implementation changed without affecting purpose or dependencies.
-> 7. **Bootstrap** — if `.dsp/` is empty, traverse the project from root entrypoint via DFS on imports, documenting every file.
+> 7. **TOC membership** — new entities land in every TOC whose root scope covers their path (or pass `--toc` explicitly, repeatable). Reshape membership with `add-to-toc` / `move-to-toc`.
+> 8. **Bootstrap** — if `.dsp/` is empty: discover roots (`--new-root --scope`), then three waves — index all files, then all exports, then all imports.
 >
 > **Key commands:**
 > ```
 > dsp-cli init
-> dsp-cli create-object <source> <purpose> [--kind external] [--toc ROOT_UID]
-> dsp-cli create-function <source> <purpose> [--owner UID] [--toc ROOT_UID]
+> dsp-cli create-object <source> <purpose> [--kind external] [--uid UID] [--toc TOC ...] [--new-root [--scope DIR]]
+> dsp-cli create-function <source> <purpose> [--owner UID] [--uid UID] [--toc TOC ...]
 > dsp-cli create-shared <exporter_uid> <shared_uid> [<shared_uid> ...]
 > dsp-cli add-import <importer_uid> <imported_uid> <why> [--exporter UID]
+> dsp-cli add-to-toc <uid> [<uid> ...] --toc TOC [--toc TOC ...]
+> dsp-cli move-to-toc <uid> [<uid> ...] --from TOC --to TOC
 > dsp-cli remove-import <importer_uid> <imported_uid> [--exporter UID]
 > dsp-cli remove-shared <exporter_uid> <shared_uid>
 > dsp-cli remove-entity <uid>
 > dsp-cli move-entity <uid> <new_source>
-> dsp-cli update-description <uid> [--source S] [--purpose P] [--kind K]
+> dsp-cli update-description <uid> [--source S] [--purpose P] [--kind K] [--scope DIR]
 > dsp-cli get-entity <uid>
 > dsp-cli get-children <uid> [--depth N]
 > dsp-cli get-parents <uid> [--depth N]
@@ -51,6 +54,8 @@ Embed this context when working on a DSP-tracked project:
 > dsp-cli read-toc [--toc ROOT_UID]
 > dsp-cli get-stats
 > ```
+>
+> `TOC` is a root UID or the literal `default` (the plain `.dsp/TOC` file).
 
 ## Using the CLI
 
@@ -70,7 +75,7 @@ python <skill-path>/scripts/dsp-cli.py [--root <project-root>] <command> [args]
 - **Import tracks both "from where" and "what".** One code import may create two DSP links: to the module and to the specific shared entity.
 - **Full import coverage.** Every imported file/asset must be an Object in `.dsp` — code, images, styles, configs, everything.
 - **`why` lives next to the imported entity** in its `exports/` directory (reverse index).
-- **Start from roots.** Each root entrypoint has its own TOC file.
+- **Start from roots.** Each root entrypoint has its own TOC file. A root may declare a `scope` (directory subtree); new entities are auto-assigned to every TOC whose root scope covers their path.
 - **External deps — record only.** `kind: external`, no deep dive into `node_modules`/`site-packages`/etc. But `exports index` works — shows who imports it.
 
 ## UID Format
@@ -92,18 +97,23 @@ class UserService:
 
 ## Workflows
 
-### Setting Up DSP
+### Setting Up DSP (bootstrap in 3 waves)
 
 1. Run `dsp-cli init` to create `.dsp/` directory.
-2. Identify root entrypoint(s) — `package.json` main, framework entry, etc.
-3. Run bootstrap (DFS from root). See [bootstrap.md](references/bootstrap.md).
+2. **Phase 0 — roots**: identify entrypoint(s) and their directory scopes, create each with `create-object <path> <purpose> --new-root --scope <dir>` (`.` = whole repo). Scopes make TOC assignment automatic for everything that follows.
+3. **Wave 1 — all files**: `create-object` for every project file (+ `create-function --owner` for significant inner entities, `@dsp` markers in source).
+4. **Wave 2 — all exports**: `create-shared` per file.
+5. **Wave 3 — all imports**: verify each import is alive, then `add-import`; externals get `create-object --kind external` (+ `add-to-toc` for additional roots that use them).
+6. Verify: `get-stats`, `get-orphans`, `detect-cycles`. Details: [bootstrap.md](references/bootstrap.md).
+
+Re-indexing a project whose code already has `@dsp` markers: pass the old UIDs via `--uid` at every create step — the graph is rebuilt with stable identity.
 
 ### Creating Entities (when writing new code)
 
-1. Create module: `dsp-cli create-object <path> <purpose>`
+1. Create module: `dsp-cli create-object <path> <purpose>` — it lands in every TOC whose root scope covers the path (override with `--toc <TOC>`, repeatable)
 2. Create functions: `dsp-cli create-function <path>#<symbol> <purpose> --owner <module-uid>`
-3. Register exports: `dsp-cli create-shared <module-uid> <func-uid> [<func-uid> ...]`
-4. Register imports: `dsp-cli add-import <this-uid> <imported-uid> <why> [--exporter <module-uid>]`
+3. Register exports: `dsp-cli create-shared <module-uid> <func-uid> [<func-uid> ...]` — shared entries are UIDs of existing entities, never export names
+4. Register imports: `dsp-cli add-import <this-uid> <imported-uid> <why> [--exporter <module-uid>]` — all UIDs must already exist
 5. External deps: `dsp-cli create-object <package-name> <purpose> --kind external`
 
 ### Navigating the Graph (when reading/understanding code)
@@ -121,6 +131,13 @@ class UserService:
 - Purpose changed: `dsp-cli update-description <uid> --purpose <new>`
 - File moved: `dsp-cli move-entity <uid> <new-path>`
 - Import reason changed: `dsp-cli update-import-why <importer> <imported> <new-why>`
+- Root's zone changed: `dsp-cli update-description <root-uid> --scope <dir>`
+
+### Managing TOC membership
+
+- Add existing entities to more TOCs: `dsp-cli add-to-toc <uid> [<uid> ...] --toc <TOC>` (idempotent; e.g. an external used by a second root)
+- Transfer entities between TOCs (single or batch): `dsp-cli move-to-toc <uid> [<uid> ...] --from <TOC> --to <TOC>` — all-or-nothing; a root cannot leave its own TOC
+- `<TOC>` is a root UID or `default`
 
 ### Deleting (when removing code)
 
@@ -146,10 +163,12 @@ class UserService:
 | File renamed/moved | `move-entity` |
 | File deleted | `remove-entity` |
 | Purpose changed | `update-description` |
+| Module moved to another subproject/root | `move-to-toc` (+ `move-entity` if the path changed) |
+| Entity now used by another root | `add-to-toc` |
 | Internal-only change | **No DSP update needed** |
 
 ## References
 
 - **[Storage format](references/storage-format.md)** — `.dsp/` directory structure, file formats, TOC
-- **[Bootstrap procedure](references/bootstrap.md)** — initial project markup (DFS algorithm)
+- **[Bootstrap procedure](references/bootstrap.md)** — initial project markup (3-wave algorithm)
 - **[Operations reference](references/operations.md)** — detailed semantics of all operations with import examples

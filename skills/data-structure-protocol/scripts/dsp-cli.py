@@ -36,6 +36,13 @@ TOC_BASE = "TOC"
 
 _MAX_DEPTH = 10**6
 
+_UID_RE = re.compile(r"^(obj|func)-[0-9a-f]{8}$")
+
+_VALID_KINDS = ("object", "function", "external")
+
+# TOC spec: literal "default" (the .dsp/TOC file) or a root uid (TOC-<uid>).
+_DEFAULT_TOC = "default"
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Low-level helpers
@@ -60,6 +67,32 @@ def _parse_import_line(line: str) -> tuple[str, str | None]:
 
 def _format_import_line(uid: str, via: str | None) -> str:
     return f"{uid} via={via}" if via else uid
+
+
+def _normalize_scope(scope: str) -> str:
+    s = scope.strip().replace("\\", "/")
+    if not s:
+        _fail("scope must be a repo-relative directory or '.'")
+    while s.startswith("./"):
+        s = s[2:]
+    s = s.strip("/")
+    return s if s and s != "." else "."
+
+
+def _normalize_source_path(source: str) -> str:
+    # "#symbol" fragments anchor entities inside a file; scope matching
+    # works on the file path alone.
+    s = source.split("#", 1)[0].replace("\\", "/").strip()
+    while s.startswith("./"):
+        s = s[2:]
+    return s.strip("/")
+
+
+def _scope_matches(scope: str, source: str) -> bool:
+    if scope == ".":
+        return True
+    src = _normalize_source_path(source)
+    return src == scope or src.startswith(scope + "/")
 
 
 def _read_lines(path: Path) -> list[str]:
@@ -119,7 +152,10 @@ def _fail(msg: str) -> None:
 # Description parsing / serialization
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-_DESC_KEY_RE = re.compile(r"^([a-z_]+):\s?(.*)", re.DOTALL)
+# A key line is "<key>: <value>" or a bare "<key>:" — the space (or end of
+# line) after the colon distinguishes key lines from URLs like "https://..."
+# appearing inside multi-line freeform values.
+_DESC_KEY_RE = re.compile(r"^([a-z_]+):(?:[ \t](.*)|[ \t]*$)")
 _DESC_ORDERED = ("source", "kind", "purpose")
 
 
@@ -133,7 +169,7 @@ def _parse_desc(text: str) -> dict[str, str]:
             if cur_key is not None:
                 result[cur_key] = "\n".join(cur_lines).strip()
             cur_key = m.group(1)
-            cur_lines = [m.group(2)]
+            cur_lines = [m.group(2) or ""]
         elif cur_key is not None:
             cur_lines.append(raw)
     if cur_key is not None:
@@ -168,9 +204,15 @@ class Store:
             _fail(f"directory {self.base} not found — run 'init' first")
 
     def entity_exists(self, uid: str) -> bool:
+        # Format guard doubles as a path-safety check: uids are used as
+        # path segments under .dsp/, so anything else must never reach disk.
+        if not _UID_RE.match(uid):
+            return False
         return (self.base / uid).is_dir()
 
     def require_entity(self, uid: str) -> None:
+        if not _UID_RE.match(uid):
+            _fail(f"invalid uid '{uid}' (expected obj-<8hex> or func-<8hex>)")
         if not self.entity_exists(uid):
             _fail(f"entity {uid} does not exist")
 
@@ -189,6 +231,8 @@ class Store:
 
     def toc_path(self, root_uid: str | None = None) -> Path:
         if root_uid:
+            if not _UID_RE.match(root_uid):
+                _fail(f"invalid root uid '{root_uid}' (expected obj-<8hex> or func-<8hex>)")
             return self.base / f"{TOC_BASE}-{root_uid}"
         return self.base / TOC_BASE
 
@@ -196,6 +240,10 @@ class Store:
         if not self.base.is_dir():
             return []
         return sorted(p for p in self.base.iterdir() if p.is_file() and p.name.startswith(TOC_BASE))
+
+    def toc_root_uid(self, toc_path: Path) -> str | None:
+        lines = _read_lines(toc_path)
+        return lines[0] if lines else None
 
     # ── description ──
 
@@ -270,37 +318,134 @@ class Engine:
         self.s.base.mkdir(parents=True, exist_ok=True)
         print(f"initialized {self.s.base}")
 
+    # ── uid / TOC resolution helpers ──
+
+    def _resolve_uid(self, uid: str | None, kind: str) -> str:
+        """Generate a fresh uid, or validate a caller-supplied one (re-indexing)."""
+        if uid is None:
+            return _gen_uid(kind)
+        want = "func" if kind == "function" else "obj"
+        if not _UID_RE.match(uid):
+            _fail(f"invalid uid '{uid}' (expected obj-<8hex> or func-<8hex>)")
+        if not uid.startswith(want + "-"):
+            _fail(f"uid prefix mismatch: a {kind} entity requires {want}-<8hex>, got '{uid}'")
+        if self.s.entity_exists(uid):
+            _fail(f"entity {uid} already exists — pass a different uid or remove the existing entity first")
+        return uid
+
+    def _toc_spec_path(self, spec: str, for_create: bool = False) -> Path:
+        """Resolve a TOC spec ('default' or a root uid) to its TOC file.
+
+        Explicit targets must exist — roots are born only via --new-root. The
+        single exception: on a fresh project with no TOC files at all, the
+        default TOC may be created by the first create-* call.
+        """
+        if spec == _DEFAULT_TOC:
+            p = self.s.toc_path(None)
+            if p.is_file() or (for_create and not self.s.all_toc_paths()):
+                return p
+            _fail("default TOC does not exist — pass --toc <ROOT_UID> of an existing root instead")
+        p = self.s.toc_path(spec)
+        if not p.is_file():
+            _fail(f"TOC file {p.name} not found — roots are created with 'create-object ... --new-root'")
+        return p
+
+    def _auto_toc_targets(self, source: str) -> list[Path]:
+        """All TOCs whose root scope covers `source`; fall back to the default TOC."""
+        matches: list[Path] = []
+        for toc in self.s.all_toc_paths():
+            root_uid = self.s.toc_root_uid(toc)
+            if not root_uid or not self.s.entity_exists(root_uid):
+                continue
+            scope = self.s.read_desc(root_uid).get("scope", "").strip()
+            if scope and _scope_matches(_normalize_scope(scope), source):
+                matches.append(toc)
+        if matches:
+            return matches
+        default_p = self.s.toc_path(None)
+        if default_p.is_file() or not self.s.all_toc_paths():
+            return [default_p]
+        _fail(
+            f"cannot determine target TOC for '{source}': no root scope matches and no default TOC exists; "
+            "pass --toc <ROOT_UID|default> explicitly, or set a scope on a root "
+            "(update-description <root-uid> --scope <dir>)"
+        )
+
+    def _toc_targets(self, source: str, tocs: list[str] | None) -> list[Path]:
+        if tocs:
+            paths: list[Path] = []
+            seen: set[Path] = set()
+            for spec in tocs:
+                p = self._toc_spec_path(spec, for_create=True)
+                if p not in seen:
+                    seen.add(p)
+                    paths.append(p)
+            return paths
+        return self._auto_toc_targets(source)
+
+    @staticmethod
+    def _report_tocs(targets: list[Path]) -> None:
+        print(f"toc: {', '.join(t.name for t in targets)}", file=sys.stderr)
+
     # ── §5.1 createObject ──
 
     def create_object(
-        self, source: str, purpose: str, kind: str = "object", toc: str | None = None
+        self,
+        source: str,
+        purpose: str,
+        kind: str = "object",
+        tocs: list[str] | None = None,
+        new_root: bool = False,
+        uid: str | None = None,
+        scope: str | None = None,
     ) -> str:
         self.s.ensure_init()
-        uid = _gen_uid("object")
+        if scope and not new_root:
+            _fail("--scope is only valid together with --new-root "
+                  "(for an existing root use update-description <uid> --scope)")
+        uid = self._resolve_uid(uid, "object")
+        # Resolve TOC targets before any write so a failure leaves no trace.
+        # --new-root: the object becomes TOC[0] of its own TOC-<uid>.
+        targets = [self.s.toc_path(uid)] if new_root else self._toc_targets(source, tocs)
         (self.s.base / uid).mkdir(parents=True)
-        self.s.write_desc(uid, {"source": source, "kind": kind, "purpose": purpose})
+        desc = {"source": source, "kind": kind, "purpose": purpose}
+        if new_root and scope:
+            desc["scope"] = _normalize_scope(scope)
+        self.s.write_desc(uid, desc)
         _write_lines(self.s.imports_path(uid), [])
         _write_lines(self.s.shared_path(uid), [])
-        _append_line_unique(self.s.toc_path(toc), uid)
+        for t in targets:
+            _append_line_unique(t, uid)
+        self._report_tocs(targets)
         return uid
 
     # ── §5.2 createFunction ──
 
     def create_function(
-        self, source: str, purpose: str, owner: str | None = None, toc: str | None = None
+        self,
+        source: str,
+        purpose: str,
+        owner: str | None = None,
+        tocs: list[str] | None = None,
+        uid: str | None = None,
     ) -> str:
         self.s.ensure_init()
-        uid = _gen_uid("function")
+        uid = self._resolve_uid(uid, "function")
+        if owner:
+            self.s.require_entity(owner)
+        # Validate everything (owner, TOC targets) before any write.
+        targets = self._toc_targets(source, tocs)
         (self.s.base / uid).mkdir(parents=True)
         self.s.write_desc(uid, {"source": source, "kind": "function", "purpose": purpose})
         _write_lines(self.s.imports_path(uid), [])
         if owner:
-            self.s.require_entity(owner)
             _append_line_unique(self.s.imports_path(owner), uid)
             exp = self.s.exports_dir(uid)
             exp.mkdir(parents=True, exist_ok=True)
             _write_text(exp / owner, "owner: method/member of this object")
-        _append_line_unique(self.s.toc_path(toc), uid)
+        for t in targets:
+            _append_line_unique(t, uid)
+        self._report_tocs(targets)
         return uid
 
     # ── §5.3 createShared ──
@@ -308,6 +453,8 @@ class Engine:
     def create_shared(self, exporter: str, shared_uids: list[str]) -> None:
         self.s.ensure_init()
         self.s.require_entity(exporter)
+        for sid in shared_uids:
+            self.s.require_entity(sid)
         exp_dir = self.s.exports_dir(exporter)
         exp_dir.mkdir(parents=True, exist_ok=True)
         for sid in shared_uids:
@@ -316,9 +463,7 @@ class Engine:
             shared_sub.mkdir(parents=True, exist_ok=True)
             desc_path = shared_sub / DESC_FILE
             if not desc_path.exists():
-                purpose = ""
-                if self.s.entity_exists(sid):
-                    purpose = self.s.read_desc(sid).get("purpose", "")
+                purpose = self.s.read_desc(sid).get("purpose", "")
                 _write_text(desc_path, purpose if purpose else sid)
 
     # ── §5.4 addImport ──
@@ -328,15 +473,16 @@ class Engine:
     ) -> None:
         self.s.ensure_init()
         self.s.require_entity(importer)
+        self.s.require_entity(imported)
+        if exporter:
+            self.s.require_entity(exporter)
         line = _format_import_line(imported, exporter)
         _append_line_unique(self.s.imports_path(importer), line)
         if exporter:
-            self.s.require_entity(exporter)
             rev_dir = self.s.exports_dir(exporter) / imported
             rev_dir.mkdir(parents=True, exist_ok=True)
             _write_text(rev_dir / importer, why)
         else:
-            self.s.require_entity(imported)
             exp = self.s.exports_dir(imported)
             exp.mkdir(parents=True, exist_ok=True)
             _write_text(exp / importer, why)
@@ -346,6 +492,20 @@ class Engine:
     def update_description(self, uid: str, fields: dict[str, str]) -> None:
         self.s.ensure_init()
         self.s.require_entity(uid)
+        if "kind" in fields:
+            k = fields["kind"]
+            if k not in _VALID_KINDS:
+                _fail(f"invalid kind '{k}' (expected one of: {', '.join(_VALID_KINDS)})")
+            # The uid prefix encodes the entity family; kind must stay consistent.
+            if uid.startswith("func-") and k != "function":
+                _fail(f"{uid} is a function entity — its kind cannot become '{k}'")
+            if uid.startswith("obj-") and k == "function":
+                _fail(f"{uid} is an object entity — its kind cannot become 'function'")
+        if "scope" in fields:
+            roots = {self.s.toc_root_uid(t) for t in self.s.all_toc_paths()}
+            if uid not in roots:
+                _fail(f"{uid} is not a root of any TOC — scope is only meaningful on root entities (TOC[0])")
+            fields["scope"] = _normalize_scope(fields["scope"])
         current = self.s.read_desc(uid)
         current.update(fields)
         self.s.write_desc(uid, current)
@@ -378,20 +538,40 @@ class Engine:
     def remove_import(self, importer: str, imported: str, exporter: str | None = None) -> None:
         self.s.ensure_init()
         self.s.require_entity(importer)
+
+        # Exact-match removal: without --exporter only a plain line is removed;
+        # with --exporter only the matching "via=" line. Removing a via-line by
+        # a plain call (or vice versa) would desync imports from exports/.
         imports = self.s.read_imports(importer)
         new_lines: list[str] = []
-        removed = False
+        line_removed = False
         for imp_uid, imp_via in imports:
-            if imp_uid == imported and not removed:
-                if exporter is None or imp_via == exporter:
-                    removed = True
-                    continue
+            if not line_removed and imp_uid == imported and imp_via == exporter:
+                line_removed = True
+                continue
             new_lines.append(_format_import_line(imp_uid, imp_via))
-        _write_lines(self.s.imports_path(importer), new_lines)
+        if line_removed:
+            _write_lines(self.s.imports_path(importer), new_lines)
+
         if exporter:
-            _safe_unlink(self.s.exports_dir(exporter) / imported / importer)
+            rev = self.s.exports_dir(exporter) / imported / importer
         else:
-            _safe_unlink(self.s.exports_dir(imported) / importer)
+            rev = self.s.exports_dir(imported) / importer
+        rev_removed = rev.is_file()
+        _safe_unlink(rev)
+        if exporter:
+            sub = self.s.exports_dir(exporter) / imported
+            if sub.is_dir() and not any(sub.iterdir()):
+                sub.rmdir()
+
+        if not line_removed and not rev_removed:
+            hint = (
+                "hint: this import may have been registered with --exporter; pass the same --exporter"
+                if exporter is None
+                else "hint: this import may have been registered without --exporter"
+            )
+            via_s = f" via {exporter}" if exporter else ""
+            _fail(f"import {imported}{via_s} not found in {importer} ({hint})")
 
     # ── §5.9 removeShared ──
 
@@ -435,22 +615,35 @@ class Engine:
                 ]
                 _write_lines(self.s.imports_path(other), new_lines)
 
-        for imp_uid, imp_via in self.s.read_imports(uid):
-            if imp_via:
-                _safe_unlink(self.s.exports_dir(imp_via) / imp_uid / uid)
-            else:
-                _safe_unlink(self.s.exports_dir(imp_uid) / uid)
-
+        # Full reverse-index sweep over every other entity. A targeted cleanup
+        # driven by uid's own imports/shared would miss entries that exist
+        # without a matching registration (e.g. add-import --exporter without
+        # create-shared) and leave dangling references behind.
         for other in all_uids:
             if other == uid:
                 continue
-            shared = self.s.read_shared(other)
-            if uid in shared:
+            if uid in self.s.read_shared(other):
                 _remove_line_value(self.s.shared_path(other), uid)
-                _safe_rmtree(self.s.exports_dir(other) / uid)
+            exp = self.s.exports_dir(other)
+            if not exp.is_dir():
+                continue
+            entry = exp / uid
+            if entry.is_file():
+                entry.unlink()  # uid imported `other` as a whole
+            elif entry.is_dir():
+                shutil.rmtree(entry)  # uid was exported via `other`
+            for sub in exp.iterdir():
+                if sub.is_dir():
+                    _safe_unlink(sub / uid)  # uid imported a shared of `other`
+                    if not any(sub.iterdir()):
+                        sub.rmdir()
 
         for toc in self.s.all_toc_paths():
             _remove_line_value(toc, uid)
+        # A root's own TOC file has no meaning once the root is gone.
+        own_toc = self.s.base / f"{TOC_BASE}-{uid}"
+        if own_toc.is_file():
+            own_toc.unlink()
 
         _safe_rmtree(self.s.base / uid)
 
@@ -739,6 +932,61 @@ class Engine:
             "orphans": len(orphans),
         }
 
+    # ── §5.23 addToToc ──
+
+    def add_to_toc(self, uids: list[str], tocs: list[str]) -> list[str]:
+        self.s.ensure_init()
+        uids = list(dict.fromkeys(uids))
+        for uid in uids:
+            self.s.require_entity(uid)
+        paths: list[Path] = []
+        seen: set[Path] = set()
+        for spec in tocs:
+            p = self._toc_spec_path(spec)
+            if p not in seen:
+                seen.add(p)
+                paths.append(p)
+        report: list[str] = []
+        for uid in uids:
+            for p in paths:
+                if uid in _read_lines(p):
+                    report.append(f"{uid}: already in {p.name}")
+                else:
+                    _append_line_unique(p, uid)
+                    report.append(f"{uid}: added to {p.name}")
+        return report
+
+    # ── §5.24 moveToToc ──
+
+    def move_to_toc(self, uids: list[str], from_spec: str, to_spec: str) -> list[str]:
+        self.s.ensure_init()
+        src = self._toc_spec_path(from_spec)
+        dst = self._toc_spec_path(to_spec)
+        if src == dst:
+            _fail("--from and --to point to the same TOC")
+        uids = list(dict.fromkeys(uids))
+        src_lines = _read_lines(src)
+        src_root = src_lines[0] if src_lines else None
+        # Validate the whole batch before touching anything — all-or-nothing.
+        for uid in uids:
+            self.s.require_entity(uid)
+            if uid not in src_lines:
+                _fail(f"{uid} is not in {src.name} — nothing to move")
+            if uid == src_root:
+                _fail(f"{uid} is the root of {src.name} and cannot be moved out of its own TOC")
+        dst_lines = _read_lines(dst)
+        report: list[str] = []
+        for uid in uids:
+            src_lines = [ln for ln in src_lines if ln != uid]
+            if uid in dst_lines:
+                report.append(f"{uid}: {src.name} -> {dst.name} (already in target)")
+            else:
+                dst_lines.append(uid)
+                report.append(f"{uid}: {src.name} -> {dst.name}")
+        _write_lines(src, src_lines)
+        _write_lines(dst, dst_lines)
+        return report
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Output formatting
@@ -818,6 +1066,24 @@ def _depth_type(value: str) -> int:
     return n
 
 
+def _uid_type(value: str) -> str:
+    if not _UID_RE.match(value):
+        raise argparse.ArgumentTypeError(
+            f"invalid uid '{value}' (expected obj-<8hex> or func-<8hex>, e.g. obj-a1b2c3d4)"
+        )
+    return value
+
+
+def _toc_spec_type(value: str) -> str:
+    if value == _DEFAULT_TOC:
+        return value
+    if not _UID_RE.match(value):
+        raise argparse.ArgumentTypeError(
+            f"invalid TOC '{value}' (expected a root uid like obj-a1b2c3d4, or 'default')"
+        )
+    return value
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="dsp-cli", description="Data Structure Protocol CLI")
     p.add_argument("--root", default=".", help="project root directory (default: cwd)")
@@ -832,87 +1098,113 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("source", help="repo-relative source path")
     sp.add_argument("purpose", help="1-3 sentences: what and why")
     sp.add_argument("--kind", default="object", choices=["object", "external"], help="entity kind")
-    sp.add_argument("--toc", default=None, metavar="ROOT_UID", help="TOC root uid (multi-root)")
+    sp.add_argument("--uid", default=None, metavar="UID", type=_uid_type,
+                    help="use this uid instead of generating one (re-indexing a project with existing @dsp markers)")
+    grp = sp.add_mutually_exclusive_group()
+    grp.add_argument("--toc", default=None, action="append", metavar="TOC", type=_toc_spec_type,
+                     help="target TOC: root uid or 'default'; repeatable. Default: auto-detect by root scopes")
+    grp.add_argument("--new-root", action="store_true", help="make this object a root with its own TOC-<uid>")
+    sp.add_argument("--scope", default=None, metavar="DIR",
+                    help="directory subtree covered by this root ('.' = whole repo); requires --new-root")
 
     # ── create-function ──
     sp = sub.add_parser("create-function", help="§5.2 create a Function entity")
     sp.add_argument("source", help="repo-relative source path (with #symbol if needed)")
     sp.add_argument("purpose", help="1-3 sentences: what and why")
-    sp.add_argument("--owner", default=None, metavar="UID", help="owner Object uid")
-    sp.add_argument("--toc", default=None, metavar="ROOT_UID", help="TOC root uid (multi-root)")
+    sp.add_argument("--owner", default=None, metavar="UID", type=_uid_type, help="owner Object uid")
+    sp.add_argument("--uid", default=None, metavar="UID", type=_uid_type,
+                    help="use this uid instead of generating one (re-indexing a project with existing @dsp markers)")
+    sp.add_argument("--toc", default=None, action="append", metavar="TOC", type=_toc_spec_type,
+                    help="target TOC: root uid or 'default'; repeatable. Default: auto-detect by root scopes")
 
     # ── create-shared ──
     sp = sub.add_parser("create-shared", help="§5.3 register shared/exported entities")
-    sp.add_argument("exporter", help="exporter Object uid")
-    sp.add_argument("shared", nargs="+", help="uid(s) of shared entities")
+    sp.add_argument("exporter", type=_uid_type, help="exporter Object uid")
+    sp.add_argument("shared", nargs="+", type=_uid_type, help="uid(s) of shared entities")
 
     # ── add-import ──
     sp = sub.add_parser("add-import", help="§5.4 add an import relationship")
-    sp.add_argument("importer", help="importer entity uid")
-    sp.add_argument("imported", help="imported entity uid")
+    sp.add_argument("importer", type=_uid_type, help="importer entity uid")
+    sp.add_argument("imported", type=_uid_type, help="imported entity uid")
     sp.add_argument("why", help="1-3 sentences: why this is imported")
-    sp.add_argument("--exporter", default=None, metavar="UID", help="exporter Object uid (for shared imports)")
+    sp.add_argument("--exporter", default=None, metavar="UID", type=_uid_type, help="exporter Object uid (for shared imports)")
 
     # ── update-description ──
     sp = sub.add_parser("update-description", help="§5.5 update entity description fields")
-    sp.add_argument("uid", help="entity uid")
+    sp.add_argument("uid", type=_uid_type, help="entity uid")
     sp.add_argument("--source", default=None, dest="new_source")
     sp.add_argument("--purpose", default=None, dest="new_purpose")
-    sp.add_argument("--kind", default=None, dest="new_kind")
+    sp.add_argument("--kind", default=None, dest="new_kind", choices=_VALID_KINDS)
+    sp.add_argument("--scope", default=None, dest="new_scope", metavar="DIR",
+                    help="directory subtree covered by this root ('.' = whole repo); root entities only")
 
     # ── update-import-why ──
     sp = sub.add_parser("update-import-why", help="§5.6 update import reason text")
-    sp.add_argument("importer", help="importer entity uid")
-    sp.add_argument("imported", help="imported entity uid")
+    sp.add_argument("importer", type=_uid_type, help="importer entity uid")
+    sp.add_argument("imported", type=_uid_type, help="imported entity uid")
     sp.add_argument("why", help="new reason text")
-    sp.add_argument("--exporter", default=None, metavar="UID")
+    sp.add_argument("--exporter", default=None, metavar="UID", type=_uid_type)
 
     # ── move-entity ──
     sp = sub.add_parser("move-entity", help="§5.7 update source path after rename/move")
-    sp.add_argument("uid", help="entity uid")
+    sp.add_argument("uid", type=_uid_type, help="entity uid")
     sp.add_argument("new_source", help="new repo-relative source path")
+
+    # ── add-to-toc ──
+    sp = sub.add_parser("add-to-toc", help="§5.23 add existing entities to TOC(s)")
+    sp.add_argument("uids", nargs="+", metavar="uid", type=_uid_type, help="entity uid(s) to add")
+    sp.add_argument("--toc", required=True, action="append", metavar="TOC", type=_toc_spec_type,
+                    help="target TOC: root uid or 'default'; repeatable")
+
+    # ── move-to-toc ──
+    sp = sub.add_parser("move-to-toc", help="§5.24 move entities from one TOC to another")
+    sp.add_argument("uids", nargs="+", metavar="uid", type=_uid_type, help="entity uid(s) to move")
+    sp.add_argument("--from", required=True, dest="from_toc", metavar="TOC", type=_toc_spec_type,
+                    help="source TOC: root uid or 'default'")
+    sp.add_argument("--to", required=True, dest="to_toc", metavar="TOC", type=_toc_spec_type,
+                    help="target TOC: root uid or 'default'")
 
     # ── remove-import ──
     sp = sub.add_parser("remove-import", help="§5.8 remove an import relationship")
-    sp.add_argument("importer", help="importer entity uid")
-    sp.add_argument("imported", help="imported entity uid")
-    sp.add_argument("--exporter", default=None, metavar="UID")
+    sp.add_argument("importer", type=_uid_type, help="importer entity uid")
+    sp.add_argument("imported", type=_uid_type, help="imported entity uid")
+    sp.add_argument("--exporter", default=None, metavar="UID", type=_uid_type)
 
     # ── remove-shared ──
     sp = sub.add_parser("remove-shared", help="§5.9 unregister a shared entity")
-    sp.add_argument("exporter", help="exporter Object uid")
-    sp.add_argument("shared", help="shared entity uid")
+    sp.add_argument("exporter", type=_uid_type, help="exporter Object uid")
+    sp.add_argument("shared", type=_uid_type, help="shared entity uid")
 
     # ── remove-entity ──
     sp = sub.add_parser("remove-entity", help="§5.10 remove entity and all references")
-    sp.add_argument("uid", help="entity uid to remove")
+    sp.add_argument("uid", type=_uid_type, help="entity uid to remove")
 
     # ── get-entity ──
     sp = sub.add_parser("get-entity", help="§5.11 get full entity snapshot")
-    sp.add_argument("uid", help="entity uid")
+    sp.add_argument("uid", type=_uid_type, help="entity uid")
 
     # ── get-shared ──
     sp = sub.add_parser("get-shared", help="§5.12 get public API of entity")
-    sp.add_argument("uid", help="entity uid")
+    sp.add_argument("uid", type=_uid_type, help="entity uid")
 
     # ── get-recipients ──
     sp = sub.add_parser("get-recipients", help="§5.13 get all importers of entity")
-    sp.add_argument("uid", help="entity uid")
+    sp.add_argument("uid", type=_uid_type, help="entity uid")
 
     # ── get-children ──
     sp = sub.add_parser("get-children", help="§5.14 import tree downward")
-    sp.add_argument("uid", help="entity uid")
+    sp.add_argument("uid", type=_uid_type, help="entity uid")
     sp.add_argument("--depth", type=_depth_type, default=1, help="traversal depth (default 1, 'inf' for full)")
 
     # ── get-parents ──
     sp = sub.add_parser("get-parents", help="§5.15 import tree upward")
-    sp.add_argument("uid", help="entity uid")
+    sp.add_argument("uid", type=_uid_type, help="entity uid")
     sp.add_argument("--depth", type=_depth_type, default=1, help="traversal depth (default 1, 'inf' for full)")
 
     # ── get-path ──
     sp = sub.add_parser("get-path", help="§5.16 shortest path between entities")
-    sp.add_argument("from_uid", help="start entity uid")
-    sp.add_argument("to_uid", help="end entity uid")
+    sp.add_argument("from_uid", type=_uid_type, help="start entity uid")
+    sp.add_argument("to_uid", type=_uid_type, help="end entity uid")
 
     # ── search ──
     sp = sub.add_parser("search", help="§5.17 full-text search across .dsp")
@@ -924,7 +1216,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── read-toc ──
     sp = sub.add_parser("read-toc", help="§5.19 read table of contents")
-    sp.add_argument("--toc", default=None, metavar="ROOT_UID", help="TOC root uid (multi-root)")
+    sp.add_argument("--toc", default=None, metavar="ROOT_UID", type=_uid_type, help="TOC root uid (multi-root)")
 
     # ── detect-cycles ──
     sub.add_parser("detect-cycles", help="§5.20 find circular dependencies")
@@ -954,11 +1246,13 @@ def main() -> None:
         engine.init()
 
     elif cmd == "create-object":
-        uid = engine.create_object(args.source, args.purpose, args.kind, args.toc)
+        uid = engine.create_object(
+            args.source, args.purpose, args.kind, args.toc, args.new_root, args.uid, args.scope
+        )
         print(uid)
 
     elif cmd == "create-function":
-        uid = engine.create_function(args.source, args.purpose, args.owner, args.toc)
+        uid = engine.create_function(args.source, args.purpose, args.owner, args.toc, args.uid)
         print(uid)
 
     elif cmd == "create-shared":
@@ -977,8 +1271,10 @@ def main() -> None:
             fields["purpose"] = args.new_purpose
         if args.new_kind is not None:
             fields["kind"] = args.new_kind
+        if args.new_scope is not None:
+            fields["scope"] = args.new_scope
         if not fields:
-            _fail("provide at least one field to update (--source, --purpose, --kind)")
+            _fail("provide at least one field to update (--source, --purpose, --kind, --scope)")
         engine.update_description(args.uid, fields)
         print("ok")
 
@@ -989,6 +1285,14 @@ def main() -> None:
     elif cmd == "move-entity":
         engine.move_entity(args.uid, args.new_source)
         print("ok")
+
+    elif cmd == "add-to-toc":
+        for line in engine.add_to_toc(args.uids, args.toc):
+            print(line)
+
+    elif cmd == "move-to-toc":
+        for line in engine.move_to_toc(args.uids, args.from_toc, args.to_toc):
+            print(line)
 
     elif cmd == "remove-import":
         engine.remove_import(args.importer, args.imported, args.exporter)

@@ -84,7 +84,7 @@ DSP architecture is a set of rules. But without discipline an agent can easily v
 The skill covers exactly the operational part:
 
 - **It embeds an Agent Prompt**: “before changing anything — find the entities; when creating — register; when importing — add `why`; when deleting — perform cascade cleanup.”
-- **It provides reference materials** in `references/`: the storage format, the bootstrap algorithm (DFS from entry points), the semantics of operations.
+- **It provides reference materials** in `references/`: the storage format, the bootstrap algorithm (three flat waves after root discovery), the semantics of operations.
 - **It ships a production-ready CLI** `scripts/dsp-cli.py` that implements the operations from `ARCHITECTURE.md` and supports navigation/diagnostics (cycles/orphans/stats).
 
 **DSP becomes not a “document,” but a living contract** that the agent executes while working — and keeps `.dsp` consistent without manual intervention.
@@ -98,7 +98,7 @@ Yes. **The initial bootstrap on a large repository is expensive** — in time, a
 Why:
 
 - You need to identify the root entry points (and there are many in a monorepo).
-- You need to traverse dependencies depth-first (DFS) and record all reachable modules/files/resources.
+- You need to index the whole project in three waves — all files, all exports, all imports.
 - For each node, you need to write a _minimal, but precise_ `purpose`.
 - You need to fill in the reasons (`why`) for import edges in a disciplined way — otherwise half of DSP’s value disappears.
 - Sometimes you need to add `@dsp` markers in source files for exported entities (so the UID becomes an “anchor” in code).

@@ -2,6 +2,8 @@
 
 A realistic walkthrough of using DSP when working on an existing codebase with Cursor.
 
+`dsp-cli` is shorthand for `python <skill-path>/scripts/dsp-cli.py --root .`.
+
 ## Scenario
 
 You have an e-commerce project with DSP already bootstrapped. You ask the Cursor agent to add a "wishlist" feature.
@@ -27,11 +29,13 @@ dsp-cli read-toc
 Output:
 
 ```
-obj-1a2b3c4d  src/products/       Product catalog module
-obj-5e6f7a8b  src/auth/           Authentication module
-obj-9c0d1e2f  src/cart/           Shopping cart module
-obj-3a4b5c6d  src/database/       Database layer
+obj-1a2b3c4d [root]
+obj-5e6f7a8b
+obj-9c0d1e2f
+obj-3a4b5c6d
 ```
+
+The agent reads the descriptions of these entities (`get-entity`) and learns the layout: `obj-1a2b3c4d` is the products module, `obj-5e6f7a8b` — auth, `obj-9c0d1e2f` — cart, `obj-3a4b5c6d` — database layer.
 
 ## Step 2: Find Related Entities
 
@@ -49,7 +53,7 @@ dsp-cli get-entity obj-1a2b3c4d
 dsp-cli get-children obj-1a2b3c4d
 ```
 
-This reveals `obj-1a2b3c4d` has a shared export `ProductService` and child functions like `getProductById`.
+This reveals `obj-1a2b3c4d` has a shared export `func-ab12cd34` (`ProductService`) and child functions like `getProductById`.
 
 ## Step 3: Check Impact Before Changes
 
@@ -75,35 +79,40 @@ With `dsp-new-file.mdc` active, the agent is prompted to register each new file.
 ## Step 5: Register New Entities in DSP
 
 ```bash
-dsp-cli create-object \
-  --source src/wishlist/ \
-  --purpose "Wishlist module — save and manage favorite products per user"
-# Output: obj-aa11bb22
+# Register the wishlist module
+dsp-cli create-object src/wishlist/ \
+  "Wishlist module — save and manage favorite products per user"
+# → obj-aa11bb22
 
-dsp-cli create-function \
-  --source src/wishlist/wishlist.service.ts \
-  --purpose "Wishlist business logic — add, remove, list saved products" \
+# Register the service function
+dsp-cli create-function src/wishlist/wishlist.service.ts \
+  "Wishlist business logic — add, remove, list saved products" \
   --owner obj-aa11bb22
-# Output: func-cc33dd44
+# → func-cc33dd44
 ```
 
 ## Step 6: Record Dependencies
 
 ```bash
+# Wishlist depends on ProductService
 dsp-cli add-import obj-aa11bb22 obj-1a2b3c4d \
-  --why "uses ProductService to validate product existence"
+  "uses ProductService to validate product existence"
 
+# Wishlist depends on Database layer
 dsp-cli add-import obj-aa11bb22 obj-3a4b5c6d \
-  --why "persists wishlist items"
+  "persists wishlist items"
 
+# Wishlist depends on Auth module
 dsp-cli add-import obj-aa11bb22 obj-5e6f7a8b \
-  --why "authenticates user before wishlist operations"
+  "authenticates user before wishlist operations"
 ```
 
 ## Step 7: Declare Public API
 
+The wishlist service is consumed by other modules, so its entity (created in Step 5) is shared by UID:
+
 ```bash
-dsp-cli create-shared obj-aa11bb22 WishlistService
+dsp-cli create-shared obj-aa11bb22 func-cc33dd44
 ```
 
 ## Step 8: Verify Consistency

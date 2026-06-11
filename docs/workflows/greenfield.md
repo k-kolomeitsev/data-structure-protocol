@@ -39,6 +39,7 @@ irm https://raw.githubusercontent.com/k-kolomeitsev/data-structure-protocol/main
 ```
 $skill-installer install https://github.com/k-kolomeitsev/data-structure-protocol/tree/main/skills/data-structure-protocol
 ```
+> `$skill-installer` is a Codex skill invocation — type it inside a Codex CLI session, not in your shell.
 
 ## 2. Initialize DSP
 
@@ -245,21 +246,32 @@ dsp-cli add-import obj-ORDER_SVC obj-PAYMENT_SVC \
   "order service delegates payment processing to payment service during checkout flow"
 ```
 
-### Use `--toc` for multi-root projects
+### Use `--new-root --scope` for multi-root projects
 
-If your project has multiple entry points (e.g., monorepo), use the `--toc` flag to group entities by root:
+If your project has multiple entry points (e.g., monorepo), create each root with `--new-root --scope <dir>` — the object becomes the first line of its own `TOC-<uid>`, and the scope declares which directory subtree it covers:
 
 ```bash
-# Backend root
-dsp-cli create-object "backend/src/main.ts" "Backend entry point" --toc obj-backend-root
-# obj-backend-root
+# Backend root — gets its own TOC file and covers backend/
+dsp-cli create-object "backend/src/main.ts" "Backend entry point" --new-root --scope backend
+# obj-b1a2c3d4   (creates .dsp/TOC-obj-b1a2c3d4 with this uid as the first line)
 
 # Frontend root
-dsp-cli create-object "frontend/src/main.tsx" "Frontend entry point" --toc obj-frontend-root
-# obj-frontend-root
+dsp-cli create-object "frontend/src/main.tsx" "Frontend entry point" --new-root --scope frontend
+# obj-f5e6a7b8
+
+# New entities land in the right TOC automatically — the path decides
+dsp-cli create-object "backend/src/app.module.ts" "Backend app module"
+# obj-09c8d7e6   (scope "backend" matched → appended to TOC-obj-b1a2c3d4)
+
+# Override explicitly when needed (repeatable; root uid or "default")
+dsp-cli create-object "docs/api.md" "API contract used by both apps" --toc obj-b1a2c3d4 --toc obj-f5e6a7b8
+
+# Reshape membership later
+dsp-cli add-to-toc obj-09c8d7e6 --toc obj-f5e6a7b8
+dsp-cli move-to-toc obj-09c8d7e6 --from obj-f5e6a7b8 --to obj-b1a2c3d4
 
 # Read a specific TOC
-dsp-cli read-toc --toc obj-backend-root
+dsp-cli read-toc --toc obj-b1a2c3d4
 ```
 
 ### Don't over-register

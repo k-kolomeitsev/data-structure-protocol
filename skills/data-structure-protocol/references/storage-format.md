@@ -53,6 +53,8 @@ Optional extra sections (freeform): `notes:`, `contracts:`, etc.
 
 **Root entrypoint rule:** root's `description` must include a brief project description (what the system is, main workflow, public API boundaries).
 
+**Root-only field `scope:`** — repo-relative directory subtree this root covers (`.` = whole repo). Set via `create-object ... --new-root --scope <dir>` or `update-description <root-uid> --scope <dir>`. Entities created without an explicit `--toc` are appended to every TOC whose root scope covers their source path.
+
 ## imports File
 
 One line per dependency:
@@ -122,7 +124,13 @@ If the same shared-UID is re-exported from multiple objects (barrel exports), ea
 
 **Rules:**
 - TOC[0] is always the root entrypoint for this TOC
-- Contains all entities reachable from this root, in documentation order
+- Contains all entities of this root's zone (covered by its `scope`, reachable from it, or assigned explicitly), in documentation order
 - Each UID appears exactly once per TOC
-- Same entity may appear in multiple TOCs (if reachable from multiple roots)
+- Same entity may appear in multiple TOCs (overlapping scopes, externals shared between roots)
 - New entities are appended at the end
+
+**Lifecycle:**
+- `TOC-<rootUid>` is created by registering the root with `create-object ... --new-root [--scope <dir>]` (the root's UID becomes its first line)
+- Entities land in TOCs automatically (root scopes matching their path) or explicitly via repeatable `--toc <TOC>` on `create-object`/`create-function`, where `<TOC>` is a root UID or `default`
+- Membership is reshaped with `add-to-toc` (add to more TOCs, idempotent) and `move-to-toc` (transfer between TOCs, batch, all-or-nothing; a root cannot leave its own TOC)
+- When a root entity is removed (`remove-entity`), its `TOC-<uid>` file is deleted

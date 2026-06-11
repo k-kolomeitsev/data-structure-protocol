@@ -8,6 +8,8 @@ alwaysApply: true
 
 This project uses **DSP** (Data Structure Protocol) — a graph-based structural memory stored in `.dsp/`.
 
+`dsp-cli` is shorthand for `python <skill-path>/scripts/dsp-cli.py --root .`. Arguments are positional — quote multi-word values.
+
 ## Before Modifying Code
 
 1. Run `dsp-cli read-toc` to see the project structure overview
@@ -17,21 +19,22 @@ This project uses **DSP** (Data Structure Protocol) — a graph-based structural
 
 ## After Creating New Files
 
-1. Register modules/classes with `dsp-cli create-object --source <path> --purpose "<description>"`
-2. Register standalone functions with `dsp-cli create-function --source <path> --purpose "<description>" --owner <parent-uid>`
-3. Record dependencies with `dsp-cli add-import <uid> <target-uid> --why "<reason>"`
-4. Expose public APIs with `dsp-cli create-shared <uid> <export-name>`
+1. Register modules/classes: `dsp-cli create-object <path> "<description>"`
+2. Register functions: `dsp-cli create-function "<path>#<symbol>" "<description>" --owner <parent-uid>`
+3. Record dependencies: `dsp-cli add-import <uid> <target-uid> "<reason>"`
+4. Expose public APIs: `dsp-cli create-shared <uid> <shared-entity-uid>` — the shared argument is the UID of an existing entity (create it first), not an export name
 
 ## After Deleting or Moving Files
 
 1. For deleted files: `dsp-cli remove-entity <uid>`
-2. For moved files: `dsp-cli move-entity <uid> --source <new-path>`
-3. Clean up orphaned imports: `dsp-cli get-orphans`
+2. For moved files: `dsp-cli move-entity <uid> <new-path>`
+3. For modules migrated between subprojects/roots: `dsp-cli move-to-toc <uid> --from <TOC> --to <TOC>` (`<TOC>` = root UID or `default`)
+4. Verify nothing is left dangling: `dsp-cli get-orphans`
 
 ## Quick Lookup Commands
 
 - `dsp-cli search "<query>"` — find entities by keyword
-- `dsp-cli get-children <uid>` — list sub-entities
-- `dsp-cli get-recipients <uid>` — find consumers of shared exports
+- `dsp-cli get-children <uid>` — dependency tree downward
+- `dsp-cli get-recipients <uid>` — find consumers of this entity
 - `dsp-cli get-stats` — project-wide graph statistics
 - `dsp-cli detect-cycles` — find circular dependencies

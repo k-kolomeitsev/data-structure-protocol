@@ -43,6 +43,8 @@ irm https://raw.githubusercontent.com/k-kolomeitsev/data-structure-protocol/main
 $skill-installer install https://github.com/k-kolomeitsev/data-structure-protocol/tree/main/skills/data-structure-protocol
 ```
 
+> `$skill-installer` is a Codex skill invocation — type it inside a Codex CLI session, not in your shell.
+
 ---
 
 ## What you get
@@ -185,6 +187,8 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Agent cursor -Global
 $skill-installer install https://github.com/k-kolomeitsev/data-structure-protocol/tree/main/skills/data-structure-protocol
 ```
 
+> `$skill-installer` is a Codex skill invocation — type it inside a Codex CLI session, not in your shell.
+
 > **Project install** puts the skill in your repo (`.cursor/skills/`, `.claude/skills/`, `.codex/skills/`).
 > **Global install** puts it in your home directory so it's available across all projects.
 
@@ -217,7 +221,7 @@ Modern agents already know how to plan, write tests, verify, and ship. They don'
 | **imports** | Outgoing edges — what this entity uses, with a `why` for each connection |
 | **shared** | Public API of an object — what it exposes to consumers |
 | **exports/** | Reverse index — who imports this entity and why (incoming edges) |
-| **TOC** | Per-entrypoint table of contents listing all reachable entities from a root |
+| **TOC** | Per-root table of contents listing all entities of that root's zone; membership follows root scopes automatically |
 
 UID markers anchor identity in source code:
 

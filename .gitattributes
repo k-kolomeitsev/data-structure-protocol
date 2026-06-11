@@ -1,0 +1,5 @@
+# Shell scripts and git hooks are executed by sh/bash and must stay LF,
+# including on Windows checkouts (install-hooks.ps1 copies them into .git/hooks).
+*.sh text eol=lf
+hooks/pre-commit text eol=lf
+hooks/pre-push text eol=lf

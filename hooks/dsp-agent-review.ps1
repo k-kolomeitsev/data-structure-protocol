@@ -1,48 +1,76 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$DspCli = "python .cursor\skills\data-structure-protocol\scripts\dsp-cli.py",
-    [string]$DspRoot = "."
+    [string]$DspRoot = ".",
+    # Path to dsp-cli.py. Falls back to $env:DSP_CLI, then to auto-detection.
+    [string]$DspCli = $env:DSP_CLI
 )
 
 $ErrorActionPreference = 'Stop'
 
-if (-not (Test-Path "$DspRoot\.dsp")) {
+$cliPath = $null
+if ($DspCli -and (Test-Path $DspCli)) {
+    $cliPath = $DspCli
+} else {
+    $candidates = @(
+        (Join-Path $DspRoot ".cursor\skills\data-structure-protocol\scripts\dsp-cli.py"),
+        (Join-Path $DspRoot ".claude\skills\data-structure-protocol\scripts\dsp-cli.py"),
+        (Join-Path $DspRoot ".codex\skills\data-structure-protocol\scripts\dsp-cli.py"),
+        (Join-Path $DspRoot "skills\data-structure-protocol\scripts\dsp-cli.py")
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) {
+            $cliPath = $c
+            break
+        }
+    }
+}
+
+if (-not $cliPath) {
+    Write-Host "No dsp-cli.py found. Skipping agent review."
+    exit 0
+}
+
+if (-not (Test-Path (Join-Path $DspRoot ".dsp"))) {
     Write-Host "No .dsp\ directory found. Skipping agent review."
     exit 0
 }
 
-$diff = git diff --staged 2>$null
+# Prefer the staged diff; fall back to the last commit (post-commit review).
+$diff = git diff --staged
 if (-not $diff) { $diff = git diff HEAD~1 }
 if (-not $diff) {
     Write-Host "No changes to review."
     exit 0
 }
 
-$stagedFiles = (git diff --cached --name-only --diff-filter=ACMRD 2>$null)
+$stagedFiles = @(git diff --cached --name-only --diff-filter=ACMRD)
 if (-not $stagedFiles) {
-    $stagedFiles = (git diff HEAD~1 --name-only --diff-filter=ACMRD)
+    $stagedFiles = @(git diff HEAD~1 --name-only --diff-filter=ACMRD)
 }
 
 $dspContext = ""
-foreach ($file in $stagedFiles -split "`n") {
-    $file = $file.Trim()
+foreach ($file in $stagedFiles) {
+    $file = "$file".Trim()
     if (-not $file) { continue }
 
-    $entity = & cmd /c "$DspCli --root $DspRoot find-by-source `"$file`"" 2>$null
-    if ($entity) {
-        $uid = [regex]::Match($entity, '(obj|func)-[a-f0-9]{8}').Value
+    # find-by-source prints "not found" to stdout (exit 1) on a miss.
+    $entity = & python $cliPath --root $DspRoot find-by-source $file
+    $entityText = (@($entity) -join "`n").Trim()
+    if ($entityText -and $entityText -notmatch 'not found') {
+        $uid = [regex]::Match($entityText, '(obj|func)-[a-f0-9]{8}').Value
         if ($uid) {
-            $entityInfo = & cmd /c "$DspCli --root $DspRoot get-entity $uid" 2>$null
-            $dspContext += "=== DSP entity for $file ($uid) ===`n$entityInfo`n`n"
+            $entityInfo = & python $cliPath --root $DspRoot get-entity $uid
+            $entityInfoText = (@($entityInfo) -join "`n")
+            $dspContext += "=== DSP entity for $file ($uid) ===`n$entityInfoText`n`n"
         }
     } else {
         $dspContext += "=== $file - NOT in DSP ===`n`n"
     }
 }
 
-$stats = & cmd /c "$DspCli --root $DspRoot get-stats" 2>$null
-$orphans = & cmd /c "$DspCli --root $DspRoot get-orphans" 2>$null
+$stats = (@(& python $cliPath --root $DspRoot get-stats) -join "`n")
+$orphans = (@(& python $cliPath --root $DspRoot get-orphans) -join "`n")
 
 $reviewFile = Join-Path $env:TEMP "dsp-review-$([guid]::NewGuid().ToString('N').Substring(0,8)).md"
 

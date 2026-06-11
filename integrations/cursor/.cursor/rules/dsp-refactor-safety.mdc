@@ -20,7 +20,7 @@ dsp-cli find-by-source <file-being-refactored>
 # Direct dependents — who imports this entity
 dsp-cli get-parents <uid>
 
-# Shared export consumers — who uses its public API
+# All importers with their reasons
 dsp-cli get-recipients <uid>
 ```
 
@@ -28,21 +28,22 @@ dsp-cli get-recipients <uid>
 
 - If `get-parents` returns entities → changing this entity's interface will break them
 - If `get-recipients` returns consumers → changing shared exports will affect downstream consumers
-- Review the `--why` field on each import to understand the coupling reason
+- Review the `why` reason recorded for each import to understand the coupling
 
 ## Step 4: Refactor Safely
 
 After making changes:
 
-1. **Renamed file** → `dsp-cli move-entity <uid> --source <new-path>`
+1. **Renamed file** → `dsp-cli move-entity <uid> <new-path>`
 2. **Changed public API** → update shared exports: `dsp-cli remove-shared` / `dsp-cli create-shared`
-3. **Removed dependency** → `dsp-cli remove-import <uid> <target-uid>`
-4. **Added dependency** → `dsp-cli add-import <uid> <target-uid> --why "<reason>"`
+3. **Removed dependency** → `dsp-cli remove-import <uid> <target-uid>` (add `--exporter <uid>` if the import was registered with one)
+4. **Added dependency** → `dsp-cli add-import <uid> <target-uid> "<reason>"`
 5. **Updated purpose** → `dsp-cli update-description <uid> --purpose "<new purpose>"`
+6. **Moved to another subproject/root** → `dsp-cli move-to-toc <uid> --from <TOC> --to <TOC>` (+ `move-entity` if the path changed)
 
 ## Step 5: Verify
 
 ```bash
-dsp-cli get-orphans      # no broken references
+dsp-cli get-orphans      # no dangling entities
 dsp-cli detect-cycles    # no circular dependencies
 ```

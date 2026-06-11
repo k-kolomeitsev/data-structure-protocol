@@ -29,7 +29,7 @@ The difference: DSP provides knowledge the agent doesn't have. Superpowers provi
 | **Is the problem still real?** | Yes — no model has built-in project memory | Diminishing — modern models follow TDD and plan when prompted |
 | **Architecture** | Graph database in `.dsp/` (plain text) | Composable skills/subagents |
 | **Memory / Persistence** | Full graph persists across sessions, tools, branches | No persistent project memory |
-| **Brownfield support** | First-class — DFS bootstrap for existing codebases | No explicit brownfield workflow |
+| **Brownfield support** | First-class — 3-wave bootstrap for existing codebases | No explicit brownfield workflow |
 | **Impact analysis** | Built-in — graph traversal shows what breaks | Not available |
 | **TDD** | Not in scope — agent handles this natively | Core selling point — enforces RED-GREEN-REFACTOR |
 | **Overhead** | Low — memory layer, no ceremony | Medium — mandates full TDD cycle even for trivial changes |

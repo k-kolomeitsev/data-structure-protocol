@@ -2,6 +2,8 @@
 
 A walkthrough of building a new project from scratch with DSP and Cursor.
 
+`dsp-cli` is shorthand for `python <skill-path>/scripts/dsp-cli.py --root .`.
+
 ## Scenario
 
 You're starting a new REST API for a task management app. You want DSP from day one so the agent always has structural awareness.
@@ -32,10 +34,9 @@ With `dsp-core.mdc` active, the agent plans the module structure and registers e
 The agent creates `src/database/connection.ts` and registers it:
 
 ```bash
-dsp-cli create-object \
-  --source src/database/ \
-  --purpose "Database connection and query layer (PostgreSQL)"
-# Output: obj-db000001
+dsp-cli create-object src/database/ \
+  "Database connection and query layer (PostgreSQL)"
+# → obj-dddd0001
 ```
 
 ## Step 4: Create Core Modules
@@ -43,64 +44,77 @@ dsp-cli create-object \
 With `dsp-new-file.mdc` triggering on each new source file, the agent registers modules as it goes:
 
 ```bash
-dsp-cli create-object \
-  --source src/users/ \
-  --purpose "User management — registration, authentication, profiles"
-# Output: obj-us000002
+# Users module
+dsp-cli create-object src/users/ \
+  "User management — registration, authentication, profiles"
+# → obj-aaaa0002
 
-dsp-cli create-object \
-  --source src/projects/ \
-  --purpose "Project management — CRUD operations for projects"
-# Output: obj-pj000003
+# Projects module
+dsp-cli create-object src/projects/ \
+  "Project management — CRUD operations for projects"
+# → obj-bbbb0003
 
-dsp-cli create-object \
-  --source src/tasks/ \
-  --purpose "Task management — create, assign, update, complete tasks"
-# Output: obj-tk000004
+# Tasks module
+dsp-cli create-object src/tasks/ \
+  "Task management — create, assign, update, complete tasks"
+# → obj-cccc0004
 ```
 
 ## Step 5: Register Functions Within Modules
 
 ```bash
-dsp-cli create-function \
-  --source src/users/users.service.ts \
-  --purpose "User business logic — signup, login, profile updates" \
-  --owner obj-us000002
-# Output: func-us000005
+dsp-cli create-function src/users/users.service.ts \
+  "User business logic — signup, login, profile updates" \
+  --owner obj-aaaa0002
+# → func-aaaa0005
 
-dsp-cli create-function \
-  --source src/tasks/tasks.service.ts \
-  --purpose "Task business logic — CRUD, assignment, status transitions" \
-  --owner obj-tk000004
-# Output: func-tk000006
+dsp-cli create-function src/tasks/tasks.service.ts \
+  "Task business logic — CRUD, assignment, status transitions" \
+  --owner obj-cccc0004
+# → func-cccc0006
 ```
 
 ## Step 6: Declare Dependencies
 
 ```bash
-dsp-cli add-import obj-us000002 obj-db000001 \
-  --why "persists user records"
+# Users → Database
+dsp-cli add-import obj-aaaa0002 obj-dddd0001 \
+  "persists user records"
 
-dsp-cli add-import obj-pj000003 obj-db000001 \
-  --why "persists project records"
-dsp-cli add-import obj-pj000003 obj-us000002 \
-  --why "validates project owner exists"
+# Projects → Database + Users
+dsp-cli add-import obj-bbbb0003 obj-dddd0001 \
+  "persists project records"
+dsp-cli add-import obj-bbbb0003 obj-aaaa0002 \
+  "validates project owner exists"
 
-dsp-cli add-import obj-tk000004 obj-db000001 \
-  --why "persists task records"
-dsp-cli add-import obj-tk000004 obj-pj000003 \
-  --why "tasks belong to projects"
-dsp-cli add-import obj-tk000004 obj-us000002 \
-  --why "tasks are assigned to users"
+# Tasks → Database + Projects + Users
+dsp-cli add-import obj-cccc0004 obj-dddd0001 \
+  "persists task records"
+dsp-cli add-import obj-cccc0004 obj-bbbb0003 \
+  "tasks belong to projects"
+dsp-cli add-import obj-cccc0004 obj-aaaa0002 \
+  "tasks are assigned to users"
 ```
 
 ## Step 7: Declare Public APIs
 
+Shared entries are UIDs of existing entities. The service functions from Step 5 are shared directly; for projects and database the exported entities are registered first:
+
 ```bash
-dsp-cli create-shared obj-us000002 UserService
-dsp-cli create-shared obj-pj000003 ProjectService
-dsp-cli create-shared obj-tk000004 TaskService
-dsp-cli create-shared obj-db000001 DatabasePool
+dsp-cli create-shared obj-aaaa0002 func-aaaa0005
+dsp-cli create-shared obj-cccc0004 func-cccc0006
+
+dsp-cli create-function src/projects/projects.service.ts \
+  "Project business logic — CRUD, membership checks" \
+  --owner obj-bbbb0003
+# → func-bbbb0007
+dsp-cli create-shared obj-bbbb0003 func-bbbb0007
+
+dsp-cli create-function src/database/pool.ts \
+  "Connection pool accessor for repositories" \
+  --owner obj-dddd0001
+# → func-dddd0008
+dsp-cli create-shared obj-dddd0001 func-dddd0008
 ```
 
 ## Step 8: Verify the Graph
@@ -110,24 +124,31 @@ dsp-cli get-stats
 ```
 
 ```
-entities: 6
-objects: 4
-functions: 2
-imports: 6
-shared: 4
-orphans: 0
-cycles: 0
+entities:  8
+  objects:   4
+  functions: 4
+  external:  0
+imports:   10
+shared:    4
+cycles:    0
+orphans:   0
 ```
+
+(`imports` counts cross-module edges plus owner links — an object "sees" its functions.)
 
 ```bash
 dsp-cli read-toc
 ```
 
 ```
-obj-db000001  src/database/    Database connection and query layer (PostgreSQL)
-obj-us000002  src/users/       User management — registration, authentication, profiles
-obj-pj000003  src/projects/    Project management — CRUD operations for projects
-obj-tk000004  src/tasks/       Task management — create, assign, update, complete tasks
+obj-dddd0001 [root]
+obj-aaaa0002
+obj-bbbb0003
+obj-cccc0004
+func-aaaa0005
+func-cccc0006
+func-bbbb0007
+func-dddd0008
 ```
 
 ## Result

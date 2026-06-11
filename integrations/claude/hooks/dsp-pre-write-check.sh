@@ -30,16 +30,21 @@ PYTHON="${PYTHON:-python3}"
 command -v "$PYTHON" &>/dev/null || PYTHON="python"
 command -v "$PYTHON" &>/dev/null || exit 0
 
+# Hook stdin is JSON with the tool call under "tool_input"; file_path there is
+# absolute, while DSP stores repo-relative sources — convert before lookup.
+# Single-line -c: multi-line scripts break under .bat python shims (pyenv-win);
+# malformed JSON / foreign-drive paths make python exit non-zero -> silent skip.
 input=$(cat)
-file_path=$(echo "$input" | "$PYTHON" -c "import sys,json; print(json.load(sys.stdin).get('file_path',''))" 2>/dev/null) || exit 0
+file_path=$(printf '%s' "$input" | "$PYTHON" -c 'import json,os,sys; d=json.load(sys.stdin); fp=(d.get("tool_input") or {}).get("file_path") or d.get("file_path") or ""; rel=os.path.relpath(fp) if fp else ""; print("" if (not rel or rel.startswith("..")) else rel.replace(os.sep,"/"))' 2>/dev/null) || exit 0
 
 if [[ -z "$file_path" ]]; then
   exit 0
 fi
 
-result=$("$PYTHON" "$DSP_CLI" --root . find-by-source "$file_path" 2>/dev/null) || exit 0
+# find-by-source prints "not found" to stdout (exit 1) on a miss.
+result=$("$PYTHON" "$DSP_CLI" --root . find-by-source "$file_path" 2>/dev/null) || true
 
-if [[ -z "$result" ]]; then
+if [[ -z "$result" || "$result" == *"not found"* ]]; then
   echo "[DSP] Warning: '$file_path' is not tracked in DSP."
   echo "[DSP] Consider registering it with create-object or create-function after writing."
 fi
