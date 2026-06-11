@@ -6,7 +6,7 @@ alwaysApply: false
 
 # DSP Brownfield Workflow
 
-Use this workflow when integrating DSP into an existing codebase. Bootstrap runs as **three flat waves after root discovery** — no recursion, no graph traversal.
+Use this workflow when integrating DSP into an existing codebase. Bootstrap runs as **three flat waves over fixed file batches** — no recursion, no graph traversal. Core economy rule: **each file is read exactly once, by exactly one subagent**; all three waves run on top of that single read.
 
 ## Phase 0: Initialize and Discover Roots
 
@@ -24,9 +24,13 @@ dsp-cli create-object frontend/src/main.tsx "Frontend entry" --new-root --scope 
 
 Scopes make TOC assignment automatic: every entity created later lands in all TOCs whose root scope covers its path — no `--toc` needed in the waves below.
 
+## Inventory and Batching
+
+Before reading any file content: list all files with sizes (`git ls-files | xargs wc -c`; skip vendored code, build output, lock files), group them by TOC, and split each group into batches of roughly **equal total volume** (not file count). One batch = one subagent; run batches in parallel. Each subagent executes Waves 1–3 over its own files. No subagents available → process batches sequentially, keeping per-file notes from the Wave 1 read — each file is still read only once.
+
 ## Wave 1: Index All Files
 
-Every project file becomes an entity (skip vendored code, build output, lock files):
+Each subagent reads each file of its batch **once** — capturing purpose, inner entities, exports, and imports with usage sites — then registers it:
 
 ```bash
 dsp-cli create-object src/auth/jwt.service.ts "JWT token generation and validation"
@@ -37,25 +41,25 @@ Place `@dsp <uid>` markers before inner-entity declarations. Resume-safe: run `d
 
 ## Wave 2: Index All Exports
 
-For each file, register its public API (all UIDs already exist after Wave 1):
+The same subagent continues — **no re-reading**. For each file, register its public API (all UIDs already exist after its Wave 1):
 
 ```bash
 dsp-cli create-shared <module-uid> <member-uid> [<member-uid> ...]
 ```
 
-## Wave 3: Index All Imports
+## Barrier, then Wave 3: Index All Imports
 
-Verify each import is actually used in the file body (dead imports → remove from code, never register), then:
-
-```bash
-dsp-cli add-import <consumer-uid> <provider-uid> "uses authentication middleware"
-```
-
-External packages — register once, then attach to other roots' TOCs as you encounter them:
+Wave 3 starts **only after ALL batches finished Waves 1–2** — imports cross batch boundaries. At the barrier, subagents report their externals; the orchestrator registers each once and attaches it to every root that uses it:
 
 ```bash
 dsp-cli create-object express "HTTP framework" --kind external --toc <root-uid>
 dsp-cli add-to-toc <express-uid> --toc <other-root-uid>
+```
+
+Then the same subagents add the edges — still without re-reading. Imports were verified at the Wave 1 read (dead imports → removed from code, never registered); targets resolve via `find-by-source`:
+
+```bash
+dsp-cli add-import <consumer-uid> <provider-uid> "uses authentication middleware"
 ```
 
 ## Phase 4: Verify and Maintain

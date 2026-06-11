@@ -55,13 +55,16 @@ Create each root with `--new-root --scope <dir>` — it gets its own `TOC-<uid>`
 
 ## 4. Bootstrap in three waves
 
-This is the most important step. Bootstrap is **three flat passes over the project's file list** — not a graph traversal. Every wave is a linear checklist: easy to batch, parallelize, checkpoint, and resume.
+This is the most important step. Bootstrap is **three flat passes over the project's file list, executed by parallel subagents over fixed file batches** — not a graph traversal. The core economy rule: **each file is read exactly once, by exactly one subagent**; all three waves run on top of that single read, so the token cost is roughly one pass over the codebase.
 
 ```
-Phase 0: discover roots  →  one TOC per root (--new-root --scope)
-Wave 1:  ALL files       →  create-object / create-function
-Wave 2:  ALL exports     →  create-shared
-Wave 3:  ALL imports     →  add-import (+ externals)
+Phase 0:    discover roots                 →  one TOC per root (--new-root --scope)
+Inventory:  list all files + sizes         →  batches per TOC, balanced by volume;
+                                              1 batch = 1 subagent
+Wave 1:     subagent reads its batch ONCE  →  create-object / create-function
+Wave 2:     same subagent, same read       →  create-shared
+─────────── barrier: ALL batches done; register externals once ───────────
+Wave 3:     same subagent, same read       →  add-import (usage-based why)
 ```
 
 ### Step 4.1: Phase 0 — register the roots
@@ -75,9 +78,23 @@ dsp-cli create-object "src/app.module.ts" \
 
 For a monorepo — one root per package (`--scope backend`, `--scope frontend`, ...). The root's `description` must include a brief project overview.
 
-### Step 4.2: Wave 1 — index all files
+### Step 4.2: Inventory and batching
 
-List every project file (respect `.gitignore`; skip vendored code, build output, lock files) and register each one. Order doesn't matter; TOC membership is resolved automatically from the scopes:
+Before reading any file content, build the work plan:
+
+```bash
+git ls-files | xargs wc -c    # every project file with its size (any equivalent works)
+```
+
+Skip vendored code, build output, and lock files. Then:
+
+1. **Group files by TOC** (match paths against the root scopes) — a batch never mixes TOCs.
+2. **Split each group into batches of roughly equal total volume** — by content size, not file count, so subagents finish at about the same time. A batch must fit comfortably in one subagent's context.
+3. **Dispatch one subagent per batch, in parallel.** Each subagent runs Waves 1–3 below over its own files.
+
+### Step 4.3: Wave 1 — index all files
+
+Each subagent reads each file of its batch **once** — the only read in the entire bootstrap — capturing purpose, inner entities, exports, and imports with their usage sites. Then it registers what it read; TOC membership is resolved automatically from the scopes:
 
 ```bash
 dsp-cli create-object "src/users/users.module.ts" \
@@ -103,19 +120,33 @@ dsp-cli create-function "src/users/users.service.ts#validateCredentials" \
 # func-d3e4f5a6
 ```
 
-Interrupted? Resume safely: `dsp-cli find-by-source <path>` — skip files that already have entities.
+Batch interrupted? Re-dispatch it: `dsp-cli find-by-source <path>` — skip files that already have entities.
 
-### Step 4.3: Wave 2 — index all exports
+### Step 4.4: Wave 2 — index all exports
 
-For each file, register its public API. All UIDs already exist after Wave 1, so this wave is pure wiring:
+The same subagent continues over the files it already read — **no re-reading**. All UIDs exist after its Wave 1, so this is pure wiring:
 
 ```bash
 dsp-cli create-shared obj-a1b2c3d4 func-c9d0e1f2 func-d3e4f5a6
 ```
 
-### Step 4.4: Wave 3 — index all imports
+Exports are batch-local — no waiting on other batches.
 
-For each file, verify every import is actually used in the file body (dead imports → remove from code, never register), then record the edge. Local targets are resolved with `find-by-source` — they all exist already:
+### Step 4.5: Barrier — then Wave 3, index all imports
+
+Imports cross batch boundaries, so Wave 3 starts **only after every batch finished Waves 1–2**. At the barrier each subagent reports the external packages its batch imports (known from the Wave 1 read), and the orchestrator registers each external once:
+
+```bash
+dsp-cli create-object "@nestjs/core" \
+  "NestJS core framework — dependency injection, module system, lifecycle hooks" \
+  --kind external --toc obj-82e23068
+# obj-aaaa1111
+
+# Another root also uses it? Attach the same entity to that root's TOC:
+dsp-cli add-to-toc obj-aaaa1111 --toc obj-f5e6a7b8
+```
+
+Then the same subagents record the edges — still without re-reading sources. Imports were verified at the Wave 1 read (dead imports → removed from code, never registered); local targets resolve via `find-by-source`:
 
 ```bash
 dsp-cli add-import obj-82e23068 obj-a1b2c3d4 \
@@ -125,24 +156,12 @@ dsp-cli add-import obj-82e23068 obj-a1b2c3d4 \
 dsp-cli add-import obj-AUTH_SVC func-d3e4f5a6 \
   "auth service uses validateCredentials to verify login attempts" \
   --exporter obj-a1b2c3d4
-```
-
-External libraries are registered as `--kind external` on first encounter. You don't go inside them, but you track who uses them and why:
-
-```bash
-dsp-cli create-object "@nestjs/core" \
-  "NestJS core framework — dependency injection, module system, lifecycle hooks" \
-  --kind external --toc obj-82e23068
-# obj-aaaa1111
 
 dsp-cli add-import obj-82e23068 obj-aaaa1111 \
   "app module uses NestJS core for module bootstrapping and DI container"
-
-# Another root also uses it? Attach the existing entity to that root's TOC:
-dsp-cli add-to-toc obj-aaaa1111 --toc obj-f5e6a7b8
 ```
 
-### Step 4.5: Verify
+### Step 4.6: Verify
 
 ```bash
 dsp-cli get-stats        # totals: entities, imports, shared, cycles, orphans
@@ -150,10 +169,13 @@ dsp-cli get-orphans      # unreferenced files — expected for scripts/configs; 
 dsp-cli detect-cycles    # circular dependencies
 ```
 
+Every file from the inventory must resolve via `find-by-source`.
+
 ### Bootstrap tips
 
-- **Waves, not traversal.** Don't follow imports recursively — finish Wave 1 for the whole file list first, then exports, then imports. `add-import` never fails on a missing UID this way.
-- **Batch by directory.** Within a wave, files are independent — process them in batches (or in parallel agent sessions) per directory.
+- **One read per file.** Everything the waves need (purpose, entities, exports, import usage) is captured at the Wave 1 read; Waves 2–3 never re-open sources.
+- **Waves, not traversal.** Don't follow imports recursively — `add-import` never fails on a missing UID because all entities exist before Wave 3.
+- **Balance batches by volume, not file count** — equal-sized batches mean no subagent idles at the barrier.
 - **Re-indexing a previously mapped project?** If source files still carry `@dsp <uid>` markers, collect them with grep and pass `--uid <old-uid>` at every create step — identities survive the rebuild.
 - **The agent should do this, not you.** Give the agent the DSP skill instructions and ask it to "bootstrap DSP for this project".
 

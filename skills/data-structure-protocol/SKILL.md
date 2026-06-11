@@ -30,7 +30,7 @@ Embed this context when working on a DSP-tracked project:
 > 5. **When renaming/moving a file** — call `move-entity`. UID does not change.
 > 6. **Don't touch DSP** if only internal implementation changed without affecting purpose or dependencies.
 > 7. **TOC membership** — new entities land in every TOC whose root scope covers their path (or pass `--toc` explicitly, repeatable). Reshape membership with `add-to-toc` / `move-to-toc`.
-> 8. **Bootstrap** — if `.dsp/` is empty: discover roots (`--new-root --scope`), then three waves — index all files, then all exports, then all imports.
+> 8. **Bootstrap** — if `.dsp/` is empty: discover roots (`--new-root --scope`), split files into per-TOC batches balanced by volume, then three waves over the batches in parallel — index all files, then all exports, then all imports. Each file is read exactly once (in Wave 1); later waves reuse that read.
 >
 > **Key commands:**
 > ```
@@ -99,12 +99,16 @@ class UserService:
 
 ### Setting Up DSP (bootstrap in 3 waves)
 
+Core economy rule: **each file is read exactly once, by exactly one subagent** — all three waves run on top of that single read. Batches run in parallel; the only sync point is the barrier before Wave 3.
+
 1. Run `dsp-cli init` to create `.dsp/` directory.
 2. **Phase 0 — roots**: identify entrypoint(s) and their directory scopes, create each with `create-object <path> <purpose> --new-root --scope <dir>` (`.` = whole repo). Scopes make TOC assignment automatic for everything that follows.
-3. **Wave 1 — all files**: `create-object` for every project file (+ `create-function --owner` for significant inner entities, `@dsp` markers in source).
-4. **Wave 2 — all exports**: `create-shared` per file.
-5. **Wave 3 — all imports**: verify each import is alive, then `add-import`; externals get `create-object --kind external` (+ `add-to-toc` for additional roots that use them).
-6. Verify: `get-stats`, `get-orphans`, `detect-cycles`. Details: [bootstrap.md](references/bootstrap.md).
+3. **Inventory & batching**: list all project files with sizes (e.g. `git ls-files | xargs wc -c`; skip vendored code, build output, lock files). Group by TOC, split each group into batches of roughly equal volume — one batch per subagent, dispatched in parallel.
+4. **Wave 1 — all files**: each subagent reads each file of its batch **once** (capturing purpose, entities, exports, imports with usage sites) and registers it: `create-object` + `create-function --owner` for significant inner entities, `@dsp` markers in source.
+5. **Wave 2 — all exports**: same subagent, no re-reading — `create-shared` per file (batch-local, no waiting on other batches).
+6. **Barrier**: when ALL batches finish Waves 1–2, subagents report their externals; the orchestrator dedupes and registers each once (`create-object --kind external` + `add-to-toc` for other roots using it).
+7. **Wave 3 — all imports**: same subagent, still no re-reading — `add-import` with usage-based `why` (dead imports were already filtered at the Wave 1 read); targets resolve via `find-by-source`.
+8. Verify: `get-stats`, `get-orphans`, `detect-cycles`; every inventory file resolves via `find-by-source`. Details: [bootstrap.md](references/bootstrap.md).
 
 Re-indexing a project whose code already has `@dsp` markers: pass the old UIDs via `--uid` at every create step — the graph is rebuilt with stable identity.
 

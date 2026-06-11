@@ -16,7 +16,7 @@
 > 5. **When renaming/moving a file** — call `move-entity`. The UID does not change.
 > 6. **Don’t touch DSP** if only internal implementation changed, without changing purpose and dependencies.
 > 7. **TOC membership** — new entities land in every TOC whose root scope covers their path (or pass `--toc` explicitly, repeatable). Re-shape membership later with `add-to-toc` / `move-to-toc`.
-> 8. **Bootstrap** — if `.dsp/` is empty: discover roots (`--new-root --scope`), then three waves — index all files, then all exports, then all imports.
+> 8. **Bootstrap** — if `.dsp/` is empty: discover roots (`--new-root --scope`), split files into per-TOC batches balanced by volume, then three waves over the batches in parallel — index all files, then all exports, then all imports. Each file is read exactly once (in Wave 1); later waves reuse that read.
 >
 > **Key commands:**
 > ```
@@ -586,52 +586,64 @@ Actions:
 
 ### 6) Bootstrap (initial mapping)
 
-#### Algorithm (three waves after root discovery)
+#### Algorithm (three waves over fixed batches, after root discovery)
 
-Bootstrap is **not** a graph traversal. It is three flat, linear passes over the project's file list, executed after the roots (TOCs) are in place. Each wave is independent per file, so it can be batched, parallelized, checkpointed, and resumed.
+Bootstrap is **not** a graph traversal. It is three flat passes over the project's file list, executed by **parallel subagents over fixed file batches**. The core economy rule: **each file is read exactly once, by exactly one subagent** — all three waves run on top of that single read, so token cost ≈ one pass over the codebase regardless of the number of waves.
 
 ```
-Phase 0: discover roots  →  createObject(..., newRoot, scope)   — one TOC per root
-Wave 1:  ALL files       →  createObject / createFunction        — every file becomes an entity
-Wave 2:  ALL exports     →  createShared                         — public API of every file
-Wave 3:  ALL imports     →  addImport (+ externals)              — every dependency edge
+Phase 0:    discover roots                 →  createObject(..., newRoot, scope)  — one TOC per root
+Inventory:  list all files + sizes         →  batches per TOC, balanced by volume;
+                                              1 batch = 1 subagent
+Wave 1:     subagent reads its batch ONCE  →  createObject / createFunction      — every file becomes an entity
+Wave 2:     same subagent, same read       →  createShared                       — public API of every file
+─────────── barrier: ALL batches done; orchestrator registers externals once ───────────
+Wave 3:     same subagent, same read       →  addImport                          — every dependency edge
 ```
 
-**Phase 0. Discover roots (TOCs):**
+**Phase 0. Discover roots (TOCs)** — orchestrator:
 
 - identify entrypoints — by default auto-detect via the LLM (package.json `main`, framework entrypoint, `main.py`, etc.), or specify manually,
 - decide each root's **scope** — the directory subtree it covers (`.` for the whole repo, `backend` / `frontend` for a monorepo),
 - `createObject(rootPath, purpose + project overview, newRoot, scope)` per root — each gets its own `TOC-<rootUid>`,
-- thanks to scopes, Waves 1–3 never pass TOC arguments: every created entity is auto-assigned to all TOCs whose root scope covers its path (§5.1).
+- thanks to scopes, the waves never pass TOC arguments: every created entity is auto-assigned to all TOCs whose root scope covers its path (§5.1).
 
-**Wave 1. Index all files:**
+**Inventory and batching** — orchestrator, before any file content is read:
 
-- list **every** project file (respect `.gitignore`; exclude vendored code, build output, lock files, `.dsp/`),
-- per file: `createObject(path, purpose)`; for each significant inner entity (exported function/class) — `createFunction(path#symbol, purpose, ownerUid)`; place `@dsp <uid>` markers in source,
-- order does not matter; resume via `findBySource` (already indexed → skip).
+- list **every** project file with its content volume (respect `.gitignore`; exclude vendored code, build output, lock files, `.dsp/`),
+- group files by TOC (root scopes); a batch never mixes TOCs,
+- split each group into batches of roughly **equal total volume** (not file count) — a batch must fit in one subagent's context; equal volume means subagents finish together,
+- dispatch one subagent per batch, all in parallel.
 
-**Wave 2. Index all exports:**
+**Wave 1. Index all files** — each subagent over its batch:
 
-- per file: determine its public API → `createShared(objUid, memberUids)`,
-- every member UID already exists after Wave 1 — this wave is pure wiring.
+- **read each file once — the only read in the whole bootstrap**; while reading, capture purpose, inner entities, exports, and each import with its usage sites,
+- `createObject(path, purpose)`; for each significant inner entity (exported function/class) — `createFunction(path#symbol, purpose, ownerUid)`; place `@dsp <uid>` markers in source,
+- checkpoint per batch: every file resolves via `findBySource`; an interrupted batch is re-dispatched (skip already-indexed files).
 
-**Wave 3. Index all imports:**
+**Wave 2. Index all exports** — same subagent, no re-reading:
 
-- per file, per import: **verify the import is alive** (the symbol is used in the file body — dead imports are removed from code, not registered), then `addImport(thisUid, importedUid, why, exporterUid?)`,
-- local targets are resolved via `findBySource` — they all exist after Wave 1,
-- external dependencies: first occurrence → `createObject(pkg, purpose, kind: external)` with the current root's TOC; subsequent roots using the same external → `addToToc(extUid, rootToc)`; **never descend inside**.
+- per file: `createShared(objUid, memberUids)` — exports are batch-local, so no cross-batch synchronization is needed; a subagent proceeds right after its own Wave 1.
 
-**Verification:** `getStats`, `getOrphans` (unreachable files are expected for scripts/configs — review the rest), `detectCycles`, spot-check `readTOC` per root.
+**Barrier** — Wave 3 references entities across batches, so it starts **only after every batch completed Waves 1–2**. At the barrier each subagent reports the externals its batch imports (known from the Wave 1 read); the orchestrator dedupes and registers each external **once**: `createObject(pkg, purpose, kind: external)` + `addToToc(extUid, rootToc)` for every other root using it. **Never descend inside externals.**
+
+**Wave 3. Index all imports** — same subagent, still no re-reading:
+
+- each import was already **verified alive** at the Wave 1 read (the symbol is used in the file body — dead imports are removed from code, not registered),
+- resolve local targets via `findBySource` (no file reading; everything exists after Wave 1), then `addImport(thisUid, importedUid, why, exporterUid?)` with a usage-based `why`,
+- external targets already exist — only edges are added.
+
+**Verification:** `getStats`, `getOrphans` (unreferenced files are expected for scripts/configs — review the rest), `detectCycles`, spot-check `readTOC` per root; every inventory file resolves via `findBySource`.
 
 **Re-indexing:** if `.dsp/` is rebuilt while the code still carries `@dsp` markers, collect them via grep and pass each old UID through the `uid` parameter of `createObject`/`createFunction` — the graph is rebuilt with stable UIDs and markers stay valid.
 
 **Key rules:**
 
 - Phase 0 strictly first — roots and scopes must exist before Wave 1 so files have TOCs to land in.
-- External dependencies are recorded as Objects with `kind: external`, but their internal structure **is not analyzed**.
+- One file — one subagent — one read; all waves run on top of that read. A subagent that cannot survive the barrier persists a compact per-file digest (purpose, exports, imports with usage evidence) so Wave 3 works from the digest, not from sources.
+- No subagents available → the same plan runs sequentially with per-file digests; each file is still read only once.
 - After Wave 3, each TOC contains the complete ordered list of its root's zone — including files not (yet) reachable through imports; `getOrphans` reveals them.
 
-**Why flat waves:** every entity exists before the first `addImport` (no missing-UID failures, no creating targets mid-pass); linear passes are batchable, parallelizable, and resumable; coverage is complete — every project file is indexed, including those not reachable through imports.
+**Why flat waves:** every entity exists before the first `addImport` (no missing-UID failures, no creating targets mid-pass); batches are independent, so the work parallelizes up to the number of subagents and resumes from the inventory; coverage is complete — every project file is indexed, including those not reachable through imports.
 
 ### 7) UID: stability and “versioning”
 

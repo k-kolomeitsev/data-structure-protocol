@@ -79,7 +79,7 @@ python skills/data-structure-protocol/scripts/dsp-cli.py --root . init
 
 ## 3. Bootstrap an Existing Project (Brownfield)
 
-For a codebase that already exists, bootstrapping is **three flat waves after root discovery** — linear passes over the file list, not a graph traversal:
+For a codebase that already exists, bootstrapping is **three flat waves over fixed file batches** — not a graph traversal. Core economy rule: **each file is read exactly once, by exactly one subagent**; all three waves run on top of that single read, and batches run in parallel.
 
 1. **Phase 0 — discover roots.** Identify entrypoints (`src/main.ts`, `src/app.module.ts`, your framework’s real roots) and the directory zone each covers. Create each root with its **scope**:
 
@@ -90,35 +90,37 @@ For a codebase that already exists, bootstrapping is **three flat waves after ro
 
    Scopes make TOC assignment automatic: every entity created later lands in all TOCs whose root scope covers its path.
 
-2. **Wave 1 — index all files.** Every project file becomes an entity (skip vendored code, build output, lock files):
+2. **Inventory & batching.** List all files with sizes (`git ls-files | xargs wc -c`; skip vendored code, build output, lock files), group by TOC, split each group into batches of roughly **equal volume** — one batch per subagent, dispatched in parallel.
+
+3. **Wave 1 — index all files.** Each subagent reads each file of its batch **once** (capturing purpose, entities, exports, imports with usage sites) and registers it:
 
    ```bash
    python dsp-cli.py --root . create-object "src/router.ts" "HTTP route table and dispatch"
    ```
 
-3. **Wave 2 — index all exports.** Mark public APIs where one module exports symbols others rely on (all UIDs already exist after Wave 1):
+4. **Wave 2 — index all exports.** Same subagent, no re-reading — mark public APIs where one module exports symbols others rely on (all UIDs already exist after Wave 1):
 
    ```bash
    python dsp-cli.py --root . create-shared obj-<owner-uid> obj-<shared-uid>
    ```
 
-4. **Wave 3 — index all imports.** Verify each import is actually used in the file body (dead imports → remove from code, never register), then record the edge with a short reason:
-
-   ```bash
-   python dsp-cli.py --root . add-import obj-<from-uid> obj-<to-uid> "HTTP routing and request handling"
-   ```
-
-5. **External dependencies** (npm packages, stdlib, generated vendor code): model them as **`kind: external`** and **do not** try to map their full internals:
+5. **Barrier — register externals.** When ALL batches finish Waves 1–2, register each external dependency once as **`kind: external`** (never map its internals), attaching it to every root that uses it via `add-to-toc`:
 
    ```bash
    python dsp-cli.py --root . create-object "some-pkg" "HTTP client library" --kind external --toc obj-<root-uid>
    ```
 
-6. **Verify**: `get-stats`, `get-orphans`, `detect-cycles`.
+6. **Wave 3 — index all imports.** Same subagents, still no re-reading. Imports were verified at the Wave 1 read (dead imports → removed from code, never registered); record each edge with a usage-based reason:
+
+   ```bash
+   python dsp-cli.py --root . add-import obj-<from-uid> obj-<to-uid> "HTTP routing and request handling"
+   ```
+
+7. **Verify**: `get-stats`, `get-orphans`, `detect-cycles`; every inventory file resolves via `find-by-source`.
 
 **Re-indexing:** if the code already carries `@dsp <uid>` markers from a previous graph, pass `--uid <old-uid>` to `create-object`/`create-function` — entities keep their identity across the rebuild.
 
-**Trade-off (honest):** bootstrapping a large repo is **upfront work**. The payoff is **lower token usage** (agents find structure without re-reading everything), **faster discovery** of relevant files, and **safer refactors** because dependency direction and public surface are explicit. The wave model keeps the work resumable — each wave is a checklist you can stop and continue.
+**Trade-off (honest):** bootstrapping a large repo is **upfront work**. The payoff is **lower token usage** (agents find structure without re-reading everything), **faster discovery** of relevant files, and **safer refactors** because dependency direction and public surface are explicit. The wave model keeps the cost near one read of the codebase and the work resumable — each wave is a checklist you can stop and continue.
 
 **Greenfield projects:** you do not need a big-bang bootstrap. **Register entities as you create files and imports**; the graph stays cheap to maintain.
 
