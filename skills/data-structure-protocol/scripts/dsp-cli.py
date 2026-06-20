@@ -305,12 +305,156 @@ class Store:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# RevCache — persistent, incrementally-maintained reverse index
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class RevCache:
+    """On-disk reverse-edge index: imported_uid → importer uids.
+
+    Why this exists
+    ---------------
+    dsp-cli is a one-shot process: every invocation starts cold. The only
+    queries that cannot be answered from a few local files are the *reverse*
+    ones — "who imports X" — which otherwise scan the whole graph (O(N)), and
+    get-path, whose BFS asked that per visited node (O(N²) — the original
+    timeout). An in-memory cache cannot help: it dies with the process. So the
+    reverse index lives on disk and is maintained incrementally by mutations.
+
+    What is stored (and what is NOT)
+    --------------------------------
+    Only the reverse adjacency, one file per imported entity::
+
+        .dsp/.cache/rev/<imported>   →  importer uids, one per line (sorted)
+
+    A sentinel ``.dsp/.cache/built`` tells "X has no importers" (file absent,
+    cache built) apart from "cache not built yet" (sentinel absent).
+
+    ``importers_of(X)`` is the COMPLETE reverse set: every importer names X as
+    the first token of an imports line (direct, via-exporter, and owner edges
+    all do), so a single forward scan reconstructs it. The ``why`` text and the
+    direct/shared recipient names are NOT stored — they are cheap local reads
+    (``exports/<X>/`` and the importer's own imports line), so they stay live
+    and can never go stale on their own.
+
+    Freshness
+    ---------
+    The CLI is the sole writer of ``.dsp/`` (project rule), so incremental
+    upkeep keeps the index correct. Changes made OUTSIDE the CLI (git
+    checkout/pull, manual edits) are NOT detected — run ``rebuild-cache`` after
+    those. A missing cache is rebuilt automatically on the next reverse/heavy
+    command or rev-affecting mutation.
+    """
+
+    def __init__(self, store: "Store"):
+        self.s = store
+        self.dir = store.base / ".cache"
+        self.rev_dir = self.dir / "rev"
+        self.sentinel = self.dir / "built"
+
+    # ── state ──
+
+    def is_built(self) -> bool:
+        return self.sentinel.is_file()
+
+    def _rev_file(self, imported_uid: str) -> Path:
+        return self.rev_dir / imported_uid
+
+    # ── reads ──
+
+    def importers_of(self, imported_uid: str) -> list[str]:
+        """Importer uids of *imported_uid* (sorted). Empty list if none."""
+        return _read_lines(self._rev_file(imported_uid))
+
+    # ── incremental upkeep (a no-op until the cache is built) ──
+
+    def add_edge(self, imported_uid: str, importer_uid: str) -> None:
+        if not self.is_built():
+            return
+        f = self._rev_file(imported_uid)
+        lines = _read_lines(f)
+        if importer_uid not in lines:
+            lines.append(importer_uid)
+            _write_lines(f, sorted(lines))
+
+    def remove_edge(self, imported_uid: str, importer_uid: str) -> None:
+        if not self.is_built():
+            return
+        f = self._rev_file(imported_uid)
+        remaining = [ln for ln in _read_lines(f) if ln != importer_uid]
+        if remaining:
+            _write_lines(f, remaining)
+        else:
+            _safe_unlink(f)
+
+    # ── build / invalidate ──
+
+    def ensure_built(self) -> None:
+        """Build the index from disk if it is missing."""
+        if not self.is_built():
+            self.rebuild()
+
+    def rebuild(self) -> int:
+        """Full rebuild from the forward imports of every entity.
+
+        Returns the number of imported entities indexed.
+        """
+        _safe_rmtree(self.dir)
+        if not self.s.base.is_dir():
+            return 0
+        self.rev_dir.mkdir(parents=True, exist_ok=True)
+        rev: dict[str, set[str]] = {}
+        for uid in self.s.all_uids():
+            for imp_uid, _via in self.s.read_imports(uid):
+                if imp_uid:
+                    rev.setdefault(imp_uid, set()).add(uid)
+        for imported_uid, importers in rev.items():
+            _write_lines(self._rev_file(imported_uid), sorted(importers))
+        _write_text(self.sentinel, "1")
+        return len(rev)
+
+    def invalidate(self) -> None:
+        """Drop the whole cache; the next reverse/heavy command rebuilds it."""
+        _safe_rmtree(self.dir)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Engine — all DSP operations (ARCHITECTURE.md §5)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class Engine:
     def __init__(self, store: Store):
         self.s = store
+        self._rev = RevCache(store)
+
+    # ── reverse adjacency (served by the persistent RevCache) ──
+
+    def _all_importers(self, uid: str) -> list[tuple[str, str]]:
+        """Every entity that imports *uid*, paired with its ``why`` text.
+
+        The importer set comes from the persistent reverse index; the ``why``
+        is read live from ``exports/`` — directly for a plain import / owner
+        edge, or via the exporter for a shared (``--exporter``) import.
+        """
+        self._rev.ensure_built()
+        return [(importer, self._why_for(uid, importer))
+                for importer in self._rev.importers_of(uid)]
+
+    def _all_importer_uids(self, uid: str) -> set[str]:
+        """Set of importer uids of *uid* — no ``why`` reads (for traversal)."""
+        self._rev.ensure_built()
+        return set(self._rev.importers_of(uid))
+
+    def _why_for(self, uid: str, importer: str) -> str:
+        """Reason text for the edge importer → uid, read live from exports/."""
+        direct = self.s.exports_dir(uid) / importer
+        if direct.is_file():
+            return _read_text(direct)
+        # Shared import: locate the exporter from the importer's own imports line.
+        for imp_uid, via in self.s.read_imports(importer):
+            if imp_uid == uid and via:
+                f = self.s.exports_dir(via) / uid / importer
+                return _read_text(f) if f.is_file() else ""
+        return ""
 
     # ── init ──
 
@@ -385,7 +529,10 @@ class Engine:
 
     @staticmethod
     def _report_tocs(targets: list[Path]) -> None:
-        print(f"toc: {', '.join(t.name for t in targets)}", file=sys.stderr)
+        # Informational status on stdout, not stderr: on Windows/PowerShell a
+        # native process writing to stderr is wrapped in NativeCommandError
+        # noise on every call. stderr stays reserved for real errors (_fail).
+        print(f"toc: {', '.join(t.name for t in targets)}")
 
     # ── §5.1 createObject ──
 
@@ -446,6 +593,10 @@ class Engine:
         for t in targets:
             _append_line_unique(t, uid)
         self._report_tocs(targets)
+        if owner:
+            # The owner edge (owner imports this member) is a reverse edge.
+            self._rev.ensure_built()
+            self._rev.add_edge(uid, owner)
         return uid
 
     # ── §5.3 createShared ──
@@ -486,6 +637,10 @@ class Engine:
             exp = self.s.exports_dir(imported)
             exp.mkdir(parents=True, exist_ok=True)
             _write_text(exp / importer, why)
+        # Reverse edge is imported ← importer regardless of the via-exporter
+        # (the import line names `imported` as its first token either way).
+        self._rev.ensure_built()
+        self._rev.add_edge(imported, importer)
 
     # ── §5.5 updateDescription ──
 
@@ -573,6 +728,12 @@ class Engine:
             via_s = f" via {exporter}" if exporter else ""
             _fail(f"import {imported}{via_s} not found in {importer} ({hint})")
 
+        # Drop the reverse edge only if `importer` no longer imports `imported`
+        # by ANY route (it may have had both a plain and a via-exporter line).
+        self._rev.ensure_built()
+        if not any(u == imported for u, _ in self.s.read_imports(importer)):
+            self._rev.remove_edge(imported, importer)
+
     # ── §5.9 removeShared ──
 
     def remove_shared(self, exporter: str, shared_uid: str) -> None:
@@ -580,10 +741,12 @@ class Engine:
         self.s.require_entity(exporter)
         _remove_line_value(self.s.shared_path(exporter), shared_uid)
         shared_dir = self.s.exports_dir(exporter) / shared_uid
+        affected: list[str] = []
         if shared_dir.is_dir():
             for entry in list(shared_dir.iterdir()):
                 if entry.is_file() and entry.name != DESC_FILE:
                     recipient_uid = entry.name
+                    affected.append(recipient_uid)
                     if self.s.entity_exists(recipient_uid):
                         imports = self.s.read_imports(recipient_uid)
                         new_lines = [
@@ -593,6 +756,12 @@ class Engine:
                         ]
                         _write_lines(self.s.imports_path(recipient_uid), new_lines)
             _safe_rmtree(shared_dir)
+        # Each recipient lost its `shared_uid via=exporter` line; drop the
+        # reverse edge unless it still imports shared_uid by another route.
+        self._rev.ensure_built()
+        for recipient_uid in affected:
+            if not any(u == shared_uid for u, _ in self.s.read_imports(recipient_uid)):
+                self._rev.remove_edge(shared_uid, recipient_uid)
 
     # ── §5.10 removeEntity ──
 
@@ -646,6 +815,10 @@ class Engine:
             own_toc.unlink()
 
         _safe_rmtree(self.s.base / uid)
+        # This touches reverse edges across the whole graph (uid as importer,
+        # imported, exporter, and shared). Rather than mirror that sweep
+        # incrementally, drop the cache; the next reverse/heavy command rebuilds.
+        self._rev.invalidate()
 
     # ── §5.11 getEntity ──
 
@@ -688,35 +861,6 @@ class Engine:
         self.s.ensure_init()
         self.s.require_entity(uid)
         return self._all_importers(uid)
-
-    def _all_importers(self, uid: str) -> list[tuple[str, str]]:
-        seen: set[str] = set()
-        result: list[tuple[str, str]] = []
-
-        for rec_uid, why in self.s.read_direct_recipients(uid):
-            if rec_uid not in seen:
-                result.append((rec_uid, why))
-                seen.add(rec_uid)
-
-        for other in self.s.all_uids():
-            if uid in self.s.read_shared(other):
-                sub = self.s.exports_dir(other) / uid
-                if sub.is_dir():
-                    for f in sorted(sub.iterdir()):
-                        if f.is_file() and f.name != DESC_FILE and f.name not in seen:
-                            result.append((f.name, _read_text(f)))
-                            seen.add(f.name)
-
-        for other in self.s.all_uids():
-            if other in seen:
-                continue
-            for imp_uid, _ in self.s.read_imports(other):
-                if imp_uid == uid:
-                    result.append((other, ""))
-                    seen.add(other)
-                    break
-
-        return result
 
     # ── §5.14 getChildren ──
 
@@ -789,8 +933,7 @@ class Engine:
             neighbors: set[str] = set()
             for imp_uid, _ in self.s.read_imports(current):
                 neighbors.add(imp_uid)
-            for rec_uid, _ in self._all_importers(current):
-                neighbors.add(rec_uid)
+            neighbors.update(self._all_importer_uids(current))
             for nb in sorted(neighbors):
                 if nb == to_uid:
                     return path + [nb]
@@ -986,6 +1129,17 @@ class Engine:
         _write_lines(src, src_lines)
         _write_lines(dst, dst_lines)
         return report
+
+    # ── rebuild-cache ──
+
+    def rebuild_cache(self) -> int:
+        """Force a full rebuild of the persistent reverse-index cache.
+
+        Run this after the .dsp/ graph was changed OUTSIDE the CLI (git
+        checkout/pull, manual edits) — the incremental cache cannot see those.
+        """
+        self.s.ensure_init()
+        return self._rev.rebuild()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1227,6 +1381,12 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── get-stats ──
     sub.add_parser("get-stats", help="§5.22 project graph statistics")
 
+    # ── rebuild-cache ──
+    sub.add_parser(
+        "rebuild-cache",
+        help="rebuild the persistent reverse-index cache (after non-CLI .dsp edits)",
+    )
+
     return p
 
 
@@ -1389,6 +1549,10 @@ def main() -> None:
         print(f"shared:    {stats['shared']}")
         print(f"cycles:    {stats['cycles']}")
         print(f"orphans:   {stats['orphans']}")
+
+    elif cmd == "rebuild-cache":
+        n = engine.rebuild_cache()
+        print(f"rebuilt reverse-index cache: {n} imported entities")
 
 
 if __name__ == "__main__":

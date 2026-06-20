@@ -255,11 +255,14 @@ def process_payment(order):
 │       └── <shared_uid>/      # per shared entity
 │           ├── description    # what is exported
 │           └── <importer_uid> # why this shared is imported
-└── func-7f3a9c12/             # Function entity
-    ├── description
-    ├── imports
-    └── exports/
-        └── <owner_uid>        # ownership link
+├── func-7f3a9c12/             # Function entity
+│   ├── description
+│   ├── imports
+│   └── exports/
+│       └── <owner_uid>        # ownership link
+└── .cache/                    # derived reverse-index cache, kept in sync by the CLI
+    ├── built                  # sentinel
+    └── rev/<imported_uid>     # importer UIDs (one per line)
 ```
 
 Full specification: [`ARCHITECTURE.md`](./ARCHITECTURE.md)

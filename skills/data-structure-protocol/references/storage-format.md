@@ -9,6 +9,7 @@
 - [shared File](#shared-file)
 - [exports/ Directory](#exports-directory)
 - [TOC Files](#toc-files)
+- [Reverse-index cache](#reverse-index-cache)
 
 ## Directory Structure
 
@@ -25,11 +26,15 @@
 │       └── <shared_uid>/   # subdirectory per shared entity
 │           ├── description # what is exported
 │           └── <importer_uid>  # file: why this shared is imported
-└── func-7f3a9c12/          # Function entity
-    ├── description
-    ├── imports
-    └── exports/
-        └── <owner_uid>     # file: "owner: method/member of this object"
+├── func-7f3a9c12/          # Function entity
+│   ├── description
+│   ├── imports
+│   └── exports/
+│       └── <owner_uid>     # file: "owner: method/member of this object"
+└── .cache/                 # derived reverse-index cache (see below)
+    ├── built               # sentinel: cache has been built
+    └── rev/
+        └── <imported_uid>  # file: importer UIDs, one per line (sorted)
 ```
 
 ## Entity Directory
@@ -134,3 +139,20 @@ If the same shared-UID is re-exported from multiple objects (barrel exports), ea
 - Entities land in TOCs automatically (root scopes matching their path) or explicitly via repeatable `--toc <TOC>` on `create-object`/`create-function`, where `<TOC>` is a root UID or `default`
 - Membership is reshaped with `add-to-toc` (add to more TOCs, idempotent) and `move-to-toc` (transfer between TOCs, batch, all-or-nothing; a root cannot leave its own TOC)
 - When a root entity is removed (`remove-entity`), its `TOC-<uid>` file is deleted
+
+## Reverse-index cache
+
+`.dsp/.cache/` is a persistent index that answers reverse queries — "who imports X" — without scanning the whole graph on every call.
+
+```
+.cache/
+├── built                  # sentinel: present once the cache has been built
+└── rev/
+    └── <imported_uid>     # importer UIDs of <imported_uid>, one per line (sorted)
+```
+
+- **Stores only the reverse adjacency** (`imported → importers`). The `why` text and recipient names are NOT cached — they are cheap live reads from `exports/` and the importer's own `imports` line, so they never go stale on their own.
+- **The `built` sentinel** distinguishes "X has no importers" (rev file absent, sentinel present) from "cache not built yet" (sentinel absent).
+- **Used by** the reverse/traversal commands: `get-recipients`, `get-parents`, `get-path`, and `get-entity`'s "exported to". Forward/local commands (`get-children`, `get-shared`, `read-toc`, `find-by-source`, `search`, diagnostics) read live files and never touch it.
+- **Stays fresh automatically.** Because the CLI is the sole writer of `.dsp/`, every mutating command updates the affected reverse entries incrementally. A missing cache is rebuilt automatically on the next reverse/traversal command or reverse-affecting mutation — no manual step in normal use.
+- **Committed with the graph** (not git-ignored), so a plain `git checkout`/`pull` carries it along. Changes made **outside** the CLI are not detected: after hand-editing `.dsp/`, or after a `merge`/`rebase` that touched `.dsp/` (where `.cache/` files may merge incorrectly or conflict), run `dsp-cli rebuild-cache` to regenerate it.

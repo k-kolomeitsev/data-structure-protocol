@@ -77,6 +77,10 @@ python <skill-path>/scripts/dsp-cli.py [--root <project-root>] <command> [args]
 - **`why` lives next to the imported entity** in its `exports/` directory (reverse index).
 - **Start from roots.** Each root entrypoint has its own TOC file. A root may declare a `scope` (directory subtree); new entities are auto-assigned to every TOC whose root scope covers their path.
 - **External deps — record only.** `kind: external`, no deep dive into `node_modules`/`site-packages`/etc. But `exports index` works — shows who imports it.
+- **Persistent reverse-index cache.** `.dsp/.cache/` holds the reverse adjacency (`imported → importers`), one file per imported entity. It makes reverse and traversal commands (`get-recipients`, `get-parents`, `get-path`, and `get-entity`'s "exported to") fast on large graphs without re-scanning. Local and forward commands (`get-children`, `get-shared`, `read-toc`, `find-by-source`, `search`) read live files and never touch it. Mutating commands keep it up to date incrementally (only the affected entries), so it stays correct as you build the graph.
+  - **Auto-build.** If the cache is missing, the next reverse/traversal command — or the next reverse-affecting mutation — builds it automatically. No manual step is needed in normal use.
+  - **It is committed with the graph** (not git-ignored): a plain `git checkout`/`pull` moves the cache together with `.dsp/`. Caveat: a `merge`/`rebase` that touches `.dsp/` can merge `.cache/` files incorrectly or leave conflicts — the cache is not self-validating (it tracks only a sentinel, not content), so run `rebuild-cache` afterwards to be safe.
+  - **`rebuild-cache`.** Run `python <skill-path>/scripts/dsp-cli.py rebuild-cache` if `.dsp/` was changed **outside** this CLI — hand-edited files, or a `merge`/`rebase` that touched `.dsp/`. Agents that follow the protocol mutate `.dsp/` solely through dsp-cli, so during normal work this is rarely needed.
 
 ## UID Format
 

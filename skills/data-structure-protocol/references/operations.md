@@ -10,6 +10,7 @@
 - [Graph Traversal](#graph-traversal)
 - [Search and Discovery](#search-and-discovery)
 - [Diagnostics](#diagnostics)
+- [Maintenance](#maintenance)
 - [Import Patterns](#import-patterns)
 
 Wherever a `TOC` argument is accepted (`--toc`, `--from`, `--to`), it is either a **root UID** (targets that root's `.dsp/TOC-<uid>`) or the literal **`default`** (targets the plain `.dsp/TOC`).
@@ -39,7 +40,7 @@ TOC targets:
   3. otherwise, if no TOC files exist at all (fresh project) → the default `.dsp/TOC` is created;
   4. otherwise the command fails with a hint to pass `--toc`
 
-stdout is the created UID; the TOC list goes to stderr (`toc: ...`).
+stdout has two lines: first `toc: ...` (the TOC list), then the created UID on the **last** line. stderr is reserved for errors. Read the UID as the **last** line of stdout (e.g. `... | tail -n1`). The status goes to stdout, not stderr, to avoid PowerShell `NativeCommandError` noise on every call.
 
 ### createFunction (§5.2)
 
@@ -237,7 +238,7 @@ Public API of entity — what it exports and who uses each export.
 dsp-cli get-recipients <uid>
 ```
 
-All importers of this entity (three-level search: direct, via shared exporters, fallback by imports scan).
+All importers of this entity (direct, via shared exporters, and owner/plain-imports edges). The importer set is served by the persistent reverse-index cache (see Storage Format → Reverse-index cache); each edge's `why` is read live from `exports/`.
 
 ## Graph Traversal
 
@@ -316,6 +317,18 @@ dsp-cli get-stats
 ```
 
 Overview: entity counts (objects/functions/externals), imports, shared, cycles, orphans.
+
+## Maintenance
+
+### rebuildCache (§5.25)
+
+```
+dsp-cli rebuild-cache
+```
+
+Rebuild the persistent reverse-index cache (`.dsp/.cache/`) from scratch by scanning every entity's forward `imports`. Idempotent; prints the number of imported entities indexed.
+
+Run it only when `.dsp/` was changed **outside** this CLI — hand-edited files, or a `merge`/`rebase` that touched `.dsp/` (the incremental cache cannot see those). Normal CLI mutations keep the cache current, so this is rarely needed. See Storage Format → Reverse-index cache for what the cache holds and how it stays fresh.
 
 ## Import Patterns
 

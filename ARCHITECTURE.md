@@ -216,6 +216,21 @@ For each root entrypoint, **its own TOC file** is created under `.dsp/`. One roo
 - Lets the LLM start navigation from the right entrypoint and dive into its structure.
 - In multi-root projects (monorepo, multiple applications), each TOC is an independent map of its subtree.
 
+#### 4.5. Reverse-index cache (`.dsp/.cache/`)
+
+To answer reverse queries — “who imports X” — without scanning the whole graph on every call, DSP keeps a persistent reverse index under `.dsp/.cache/`:
+
+- `.dsp/.cache/rev/<imported_uid>` — the importer UIDs of `<imported_uid>`, one per line (sorted).
+- `.dsp/.cache/built` — a sentinel: present once the cache has been built. It distinguishes “X has no importers” (rev file absent, sentinel present) from “cache not built yet” (sentinel absent).
+
+**What it stores (and what it does not).** Only the reverse adjacency `imported → importers`. The `why` text and the direct/shared recipient names are **not** cached — they are cheap local reads (`exports/<X>/` and the importer’s own `imports` line), so they stay live and can never go stale on their own.
+
+**Who uses it.** The reverse and traversal commands: `getRecipients` (§5.13), `getParents` (§5.15), `getPath` (§5.16), and `getEntity`’s “exported to” (§5.11). Local/forward commands (`getChildren`, `getShared`, `readTOC`, `findBySource`, `search`, and the diagnostics) read live files and never touch the cache.
+
+**Freshness.** The CLI is the sole writer of `.dsp/` (the §9 contract), so every mutating operation updates the affected reverse entries incrementally — the cache stays correct as the graph is built. A missing cache is rebuilt automatically on the next reverse/traversal command or reverse-affecting mutation; no manual step is needed in normal use.
+
+**Committed with the graph.** `.cache/` is versioned together with `.dsp/` (not git-ignored), so a plain `git checkout`/`pull` carries it along. Changes made **outside** the CLI are not detected: after hand-editing `.dsp/`, or after a `merge`/`rebase` that touched `.dsp/` (where `.cache/` files may merge incorrectly or conflict), run `rebuildCache` (§5.25) to regenerate it from scratch.
+
 ### 5) Operations (tooling-level API)
 
 Below are the operations used by the `.dsp` generator.
@@ -255,7 +270,7 @@ Actions:
 - if needed — `.dsp/<objUid>/shared` (empty),
 - **append `objUid` to every target TOC**: the freshly created `.dsp/TOC-<objUid>` when `newRoot` is set, otherwise the resolved/explicit list.
 
-CLI prints the created UID to stdout; the list of TOCs the entity landed in goes to stderr (`toc: ...`).
+CLI writes two lines to stdout: first `toc: ...` (the TOCs the entity landed in), then the created UID on the **last** line; stderr is reserved for real errors. (The status goes to stdout, not stderr, so PowerShell does not wrap every call in `NativeCommandError` noise.) Machine callers must read the UID as the **last** line of stdout.
 
 #### 5.2. `createFunction(sourceRef, purpose, ownerUid?, tocs?, uid?) -> funcUid`
 
@@ -441,11 +456,11 @@ Get everyone who imports this entity, and why. Typical scenario: impact analysis
 
 Returns: a list of pairs `(recipientUid, why)`.
 
-Implementation — a three-level search (each level complements the previous, with UID deduplication):
+Implementation: the importer set is served by the persistent reverse-index cache (§4.5) and the `why` of each edge is read live from `exports/`. The set covers three kinds of edges (deduplicated by UID), each of which names `uid` as the first token of an `imports` line:
 
-1. **Direct recipients**: files under `.dsp/<uid>/exports/` (direct imports via `addImport` without `exporter`).
-2. **Via shared exporters**: if `uid` is present in someone’s `shared`, read files under `.dsp/<exporterUid>/exports/<uid>/` (imports via `addImport` with `exporter`).
-3. **Imports fallback**: scan all entities — if `uid` is found in someone’s `imports` (e.g., owner relationship) but wasn’t discovered at previous levels.
+1. **Direct recipients**: `why` from `.dsp/<uid>/exports/<importerUid>` (direct imports via `addImport` without `exporter`).
+2. **Via shared exporters**: if `uid` is imported with an `exporter`, `why` from `.dsp/<exporterUid>/exports/<uid>/<importerUid>`.
+3. **Owner / plain-imports edges**: any entity that names `uid` in its `imports` (e.g., an owner relationship) — covered by the same index.
 
 ---
 
@@ -475,7 +490,7 @@ Parameters:
 
 Returns: a tree of nodes `{ uid, description.purpose, why, parents[] }`.
 
-Implementation: recursive reading of `exports/` with a `visited` set.
+Implementation: recursive walk of reverse edges (served by the reverse-index cache, §4.5) with a `visited` set.
 
 #### 5.16. `getPath(fromUid, toUid) -> uid[] | null`
 
@@ -483,7 +498,7 @@ Find the shortest path between two entities in the graph (in any direction along
 
 Returns: an ordered list of UIDs from `fromUid` to `toUid`, or `null` if no path exists.
 
-Implementation: BFS over the `imports` graph (bidirectional — via `imports` and `exports`).
+Implementation: BFS over the graph in both directions — forward via `imports`, reverse via the reverse-index cache (§4.5). The cache is what keeps the per-node reverse lookup O(1) instead of an O(N) scan, so BFS does not degrade to O(N²).
 
 ---
 
@@ -583,6 +598,24 @@ Actions:
 - append each `uid` to the end of `toToc`; if it is already there, only the removal happens (reported as “already in target”).
 
 > Only TOC membership changes. The entity itself, its imports/shared/exports edges, and its membership in other TOCs are untouched.
+
+---
+
+#### Maintenance operations
+
+#### 5.25. `rebuildCache()`
+
+Rebuild the persistent reverse-index cache (§4.5) from scratch. Idempotent.
+
+Typical scenario: `.dsp/` was changed **outside** the CLI — hand-edited files, or a `merge`/`rebase` that touched `.dsp/` — so the incremental cache cannot see those changes. Normal CLI mutations keep the cache current, so this is rarely needed.
+
+Actions:
+
+- delete `.dsp/.cache/` entirely,
+- scan the forward `imports` of every entity and rebuild `rev/<imported>` for each imported UID (direct, via-exporter, and owner edges all count),
+- write the `built` sentinel.
+
+CLI: `dsp-cli rebuild-cache` — prints the number of imported entities indexed.
 
 ### 6) Bootstrap (initial mapping)
 

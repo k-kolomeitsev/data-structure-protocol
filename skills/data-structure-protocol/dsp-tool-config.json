@@ -1,0 +1,534 @@
+{
+  "name": "Dsp",
+  "description": "DSP (Data Structure Protocol) graph navigation and maintenance. Entity graph of this project: find modules/functions, trace imports, search by keyword, read TOC, impact analysis. Use this INSTEAD of grep/Read for understanding code structure and dependencies.",
+  "interpreter": "python",
+  "script": ".claude/skills/data-structure-protocol/scripts/dsp-cli.py",
+  "script_args": [
+    "--root",
+    "."
+  ],
+  "timeout_ms": 100000,
+  "read_only": false,
+  "commands": {
+    "get-stats": {
+      "description": "Project graph overview: entity/import/shared/cycle/orphan counts.",
+      "read_only": true
+    },
+    "read-toc": {
+      "description": "Read the table of contents (all UIDs in a root). Without --toc, reads the default TOC.",
+      "read_only": true,
+      "params": [
+        {
+          "name": "toc",
+          "type": "string",
+          "style": "flag",
+          "description": "Root UID whose TOC to read. Omit for the default TOC."
+        }
+      ]
+    },
+    "find-by-source": {
+      "description": "Find DSP entity UID(s) by source file path (repo-relative).",
+      "read_only": true,
+      "params": [
+        {
+          "name": "source_path",
+          "type": "string",
+          "style": "positional",
+          "description": "Repo-relative source path (e.g. rust-agent/agent-tools/src/cli/mod.rs)"
+        }
+      ],
+      "required": [
+        "source_path"
+      ]
+    },
+    "get-entity": {
+      "description": "Full entity snapshot: description, imports, shared, exported_to.",
+      "read_only": true,
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "style": "positional",
+          "description": "Entity UID (obj-… or func-…)"
+        }
+      ],
+      "required": [
+        "uid"
+      ]
+    },
+    "get-children": {
+      "description": "Import dependency tree downward (what this entity imports).",
+      "read_only": true,
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "style": "positional",
+          "description": "Entity UID"
+        },
+        {
+          "name": "depth",
+          "type": "string",
+          "style": "flag",
+          "description": "Traversal depth (integer, or 'inf' for full). Default 1."
+        }
+      ],
+      "required": [
+        "uid"
+      ]
+    },
+    "get-parents": {
+      "description": "Import dependency tree upward (who imports this entity).",
+      "read_only": true,
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "style": "positional",
+          "description": "Entity UID"
+        },
+        {
+          "name": "depth",
+          "type": "string",
+          "style": "flag",
+          "description": "Traversal depth (integer, or 'inf' for full). Default 1."
+        }
+      ],
+      "required": [
+        "uid"
+      ]
+    },
+    "get-recipients": {
+      "description": "All importers of an entity (impact analysis: who depends on this).",
+      "read_only": true,
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "style": "positional",
+          "description": "Entity UID"
+        }
+      ],
+      "required": [
+        "uid"
+      ]
+    },
+    "get-shared": {
+      "description": "Public API of an entity: its exported/shared entities and who imports them.",
+      "read_only": true,
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "style": "positional",
+          "description": "Entity UID"
+        }
+      ],
+      "required": [
+        "uid"
+      ]
+    },
+    "get-path": {
+      "description": "Shortest dependency path between two entities.",
+      "read_only": true,
+      "params": [
+        {
+          "name": "from_uid",
+          "type": "string",
+          "style": "positional",
+          "description": "Start entity UID"
+        },
+        {
+          "name": "to_uid",
+          "type": "string",
+          "style": "positional",
+          "description": "End entity UID"
+        }
+      ],
+      "required": [
+        "from_uid",
+        "to_uid"
+      ]
+    },
+    "search": {
+      "description": "Full-text search across all DSP entities (case-insensitive substring).",
+      "read_only": true,
+      "params": [
+        {
+          "name": "query",
+          "type": "string",
+          "style": "positional",
+          "description": "Search query"
+        }
+      ],
+      "required": [
+        "query"
+      ]
+    },
+    "detect-cycles": {
+      "description": "Find circular dependencies in the graph.",
+      "read_only": true
+    },
+    "get-orphans": {
+      "description": "Find unused entities (not imported, not a root, no exports).",
+      "read_only": true
+    },
+    "rebuild-cache": {
+      "description": "Rebuild the persistent reverse-index cache (.dsp/.cache/). Needed only if .dsp was changed outside this CLI (hand edits); normal CLI mutations keep it current."
+    },
+    "init": {
+      "description": "Initialize .dsp directory (only for a new project)."
+    },
+    "create-object": {
+      "description": "Create an Object entity (module/file/external). stdout prints a 'toc: ...' status line then the new UID; read the UID as the last line of stdout.",
+      "params": [
+        {
+          "name": "source",
+          "type": "string",
+          "style": "positional",
+          "description": "Repo-relative source path"
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "style": "positional",
+          "description": "1-3 sentences: what and why"
+        },
+        {
+          "name": "kind",
+          "type": "string",
+          "style": "flag",
+          "description": "object (default) or external"
+        },
+        {
+          "name": "uid",
+          "type": "string",
+          "style": "flag",
+          "description": "Use this UID instead of generating one (re-indexing)"
+        },
+        {
+          "name": "toc",
+          "type": "array",
+          "style": "flag",
+          "description": "Target TOC root UID(s); repeatable. Default: auto-detect by scope."
+        },
+        {
+          "name": "new_root",
+          "type": "boolean",
+          "style": "flag",
+          "description": "Make this object a root with its own TOC"
+        },
+        {
+          "name": "scope",
+          "type": "string",
+          "style": "flag",
+          "description": "Directory subtree this root covers ('.' = whole repo). Requires new_root."
+        }
+      ],
+      "required": [
+        "source",
+        "purpose"
+      ]
+    },
+    "create-function": {
+      "description": "Create a Function entity (function/method inside a module). stdout prints a 'toc: ...' status line then the new UID; read the UID as the last line of stdout.",
+      "params": [
+        {
+          "name": "source",
+          "type": "string",
+          "style": "positional",
+          "description": "Repo-relative source path (with #symbol if needed)"
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "style": "positional",
+          "description": "1-3 sentences: what and why"
+        },
+        {
+          "name": "owner",
+          "type": "string",
+          "style": "flag",
+          "description": "Owner Object UID"
+        },
+        {
+          "name": "uid",
+          "type": "string",
+          "style": "flag",
+          "description": "Use this UID instead of generating one (re-indexing)"
+        },
+        {
+          "name": "toc",
+          "type": "array",
+          "style": "flag",
+          "description": "Target TOC root UID(s); repeatable. Default: auto-detect by scope."
+        }
+      ],
+      "required": [
+        "source",
+        "purpose"
+      ]
+    },
+    "create-shared": {
+      "description": "Register exported/shared entities of a module.",
+      "params": [
+        {
+          "name": "exporter",
+          "type": "string",
+          "style": "positional",
+          "description": "Exporter Object UID"
+        },
+        {
+          "name": "shared",
+          "type": "array",
+          "style": "positional",
+          "description": "UID(s) of shared entities"
+        }
+      ],
+      "required": [
+        "exporter",
+        "shared"
+      ]
+    },
+    "add-import": {
+      "description": "Add an import relationship with a reason.",
+      "params": [
+        {
+          "name": "importer",
+          "type": "string",
+          "style": "positional",
+          "description": "Importer entity UID"
+        },
+        {
+          "name": "imported",
+          "type": "string",
+          "style": "positional",
+          "description": "Imported entity UID"
+        },
+        {
+          "name": "why",
+          "type": "string",
+          "style": "positional",
+          "description": "1-3 sentences: why this is imported"
+        },
+        {
+          "name": "exporter",
+          "type": "string",
+          "style": "flag",
+          "description": "Exporter Object UID (for shared imports via a module)"
+        }
+      ],
+      "required": [
+        "importer",
+        "imported",
+        "why"
+      ]
+    },
+    "update-description": {
+      "description": "Update entity description fields (source, purpose, kind, scope).",
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "style": "positional",
+          "description": "Entity UID"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "style": "flag",
+          "description": "New source path"
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "style": "flag",
+          "description": "New purpose text"
+        },
+        {
+          "name": "kind",
+          "type": "string",
+          "style": "flag",
+          "description": "object, function, or external"
+        },
+        {
+          "name": "scope",
+          "type": "string",
+          "style": "flag",
+          "description": "Directory subtree (root entities only)"
+        }
+      ],
+      "required": [
+        "uid"
+      ]
+    },
+    "update-import-why": {
+      "description": "Update the reason text of an existing import.",
+      "params": [
+        {
+          "name": "importer",
+          "type": "string",
+          "style": "positional",
+          "description": "Importer entity UID"
+        },
+        {
+          "name": "imported",
+          "type": "string",
+          "style": "positional",
+          "description": "Imported entity UID"
+        },
+        {
+          "name": "why",
+          "type": "string",
+          "style": "positional",
+          "description": "New reason text"
+        },
+        {
+          "name": "exporter",
+          "type": "string",
+          "style": "flag",
+          "description": "Exporter Object UID"
+        }
+      ],
+      "required": [
+        "importer",
+        "imported",
+        "why"
+      ]
+    },
+    "move-entity": {
+      "description": "Update source path after a file rename/move (UID stays the same).",
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "style": "positional",
+          "description": "Entity UID"
+        },
+        {
+          "name": "new_source",
+          "type": "string",
+          "style": "positional",
+          "description": "New repo-relative source path"
+        }
+      ],
+      "required": [
+        "uid",
+        "new_source"
+      ]
+    },
+    "add-to-toc": {
+      "description": "Add existing entities to additional TOC(s).",
+      "params": [
+        {
+          "name": "uids",
+          "type": "array",
+          "style": "positional",
+          "description": "Entity UID(s) to add"
+        },
+        {
+          "name": "toc",
+          "type": "array",
+          "style": "flag",
+          "description": "Target TOC root UID(s); repeatable"
+        }
+      ],
+      "required": [
+        "uids",
+        "toc"
+      ]
+    },
+    "move-to-toc": {
+      "description": "Transfer entities from one TOC to another (all-or-nothing).",
+      "params": [
+        {
+          "name": "uids",
+          "type": "array",
+          "style": "positional",
+          "description": "Entity UID(s) to move"
+        },
+        {
+          "name": "from_toc",
+          "type": "string",
+          "style": "flag",
+          "flag": "from",
+          "description": "Source TOC root UID or 'default'"
+        },
+        {
+          "name": "to_toc",
+          "type": "string",
+          "style": "flag",
+          "flag": "to",
+          "description": "Target TOC root UID or 'default'"
+        }
+      ],
+      "required": [
+        "uids",
+        "from_toc",
+        "to_toc"
+      ]
+    },
+    "remove-import": {
+      "description": "Remove an import relationship (cascading cleanup).",
+      "params": [
+        {
+          "name": "importer",
+          "type": "string",
+          "style": "positional",
+          "description": "Importer entity UID"
+        },
+        {
+          "name": "imported",
+          "type": "string",
+          "style": "positional",
+          "description": "Imported entity UID"
+        },
+        {
+          "name": "exporter",
+          "type": "string",
+          "style": "flag",
+          "description": "Exporter Object UID (must match the original add-import)"
+        }
+      ],
+      "required": [
+        "importer",
+        "imported"
+      ]
+    },
+    "remove-shared": {
+      "description": "Unregister a shared/exported entity.",
+      "params": [
+        {
+          "name": "exporter",
+          "type": "string",
+          "style": "positional",
+          "description": "Exporter Object UID"
+        },
+        {
+          "name": "shared",
+          "type": "string",
+          "style": "positional",
+          "description": "Shared entity UID"
+        }
+      ],
+      "required": [
+        "exporter",
+        "shared"
+      ]
+    },
+    "remove-entity": {
+      "description": "Remove an entity and all its references (cascading cleanup).",
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "style": "positional",
+          "description": "Entity UID to remove"
+        }
+      ],
+      "required": [
+        "uid"
+      ]
+    }
+  }
+}
