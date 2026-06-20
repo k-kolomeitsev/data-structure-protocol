@@ -4,7 +4,7 @@
 Production-ready CLI for building and navigating DSP project graphs.
 Used by LLM agents to maintain long-term structural memory of codebases.
 
-Operations mirror ARCHITECTURE.md §5 exactly.
+Operations mirror the spec in references/operations.md exactly.
 """
 
 from __future__ import annotations
@@ -418,7 +418,7 @@ class RevCache:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Engine — all DSP operations (ARCHITECTURE.md §5)
+# Engine — all DSP operations (see references/operations.md)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class Engine:
